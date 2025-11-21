@@ -1,4 +1,4 @@
-from environment import RobotArmEnv, simp_angle
+from src.environment import RobotArmEnv, simp_angle
 import numpy as np
 import time
 import torch as th
@@ -146,16 +146,15 @@ def do_episode(episode_data_):
 
 
 if __name__ == "__main__":
-    save_location = "../data/episodes.data"
+    save_location = "./data/episodes.data"
     env_ = RobotArmEnv(False)
-    n_episodes = 3
+    n_episodes = 10
     dataset_size_ = env_.MAX_TIMESTEPS * n_episodes
     episode_data = Dataset(dataset_size_, env_.observation_space[0], env_.action_space[0])
     del env_
     
     for i in range(n_episodes):
         do_episode(episode_data)
-        # if i % 10 == 0:
-        print(f"Episode {i} out of {n_episodes}")
-
-    episode_data.save(save_location)
+        if i % 10 == 0:
+            print(f"Episode {i} out of {n_episodes}")
+            episode_data.save(save_location)
