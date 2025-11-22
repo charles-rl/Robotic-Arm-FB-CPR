@@ -1,9 +1,9 @@
-from src.environment import RobotArmEnv, simp_angle
+from environment import RobotArmEnv, simp_angle
 import numpy as np
 import time
 import torch as th
 
-from src.environment import theoretical2simulation_angles
+from environment import theoretical2simulation_angles
 
 class Dataset:
     def __init__(self, dataset_size, n_observations, n_actions):
@@ -103,9 +103,11 @@ def generate_target_angles(robot_arm_lengths_normalized, info, env):
             target_angles_.append(simp_angle(target_angle))
         else:
             target_angles_.append(target_angle)
+    # for curr_angle, target_angle in zip(info["arm_raw_angles"], target_angles):
+    #     target_angles_.append(simp_angle(target_angle - curr_angle))
     target_angles = np.array(target_angles_)
 
-    return target_angles
+    return target_angles, target_pos_relative
 
 def do_episode(episode_data_):
     # TODO: Put this render into the environment
@@ -115,13 +117,12 @@ def do_episode(episode_data_):
 
     done = False
     observation, info = env.reset(render=is_render)
-    target_angles = generate_target_angles(robot_arm_lengths_normalized, info, env)
+    target_angles, target_pos_relative = generate_target_angles(robot_arm_lengths_normalized, info, env)
 
     while not done:
-        # action = np.array([0.0, 0.0, 0.0])
-
-        if env.timesteps == 500:
-            target_angles = generate_target_angles(robot_arm_lengths_normalized, info, env)
+        error = np.linalg.norm(target_pos_relative - observation[:2])
+        if error < 0.1:
+            target_angles, target_pos_relative = generate_target_angles(robot_arm_lengths_normalized, info, env)
 
         values, is_stop_motors = env.controller.do_angles(
             target_angles,
@@ -129,6 +130,7 @@ def do_episode(episode_data_):
             info["arm_raw_velocities"]
         )
 
+        action = np.array([0.0, 0.0, 0.0])
         if not is_stop_motors:
             action = values
 
@@ -142,16 +144,17 @@ def do_episode(episode_data_):
             env.render()
     env.close()
     del env
-    print(episode_data_.counter)
 
 
 if __name__ == "__main__":
-    save_location = "./data/episodes.data"
+    save_location = "../data/episodes.data"
     env_ = RobotArmEnv(False)
-    n_episodes = 10
+    n_episodes = 1_000
     dataset_size_ = env_.MAX_TIMESTEPS * n_episodes
     episode_data = Dataset(dataset_size_, env_.observation_space[0], env_.action_space[0])
     del env_
+
+    # episode_data.load(save_location)
     
     for i in range(n_episodes):
         do_episode(episode_data)

@@ -243,9 +243,8 @@ class RobotArmEnv:
         counter = 0
         while True:
             self.space.step(self.dt)
-            if render:
-                self.render()
-                self.clock.tick(self.FPS)
+            # if render:
+            #     self.render()
             values, is_stop_motors = self.controller.do_angles(self.init_angles,
                                                                [l.angle for l in self.links],
                                                                [l.angular_velocity for l in self.links])
@@ -302,10 +301,16 @@ class RobotArmEnv:
 
     def reset(self, render=False):
         # Decided to destroy object instead of resetting
-        # for shape in self.space.shapes:
-        #     self.space.remove(shape.body, shape)
-        # for constraint in self.space.constraints:
-        #     self.space.remove(constraint)
+        for body in self.space.bodies:
+            self.space.remove(body)
+        for shape in self.space.shapes:
+            self.space.remove(shape)
+        for constraint in self.space.constraints:
+            self.space.remove(constraint)
+
+        self.links = []
+        self.joints = []
+        self.motors = []
 
         self._setup_env()
         self._move_to_start_position(render)
@@ -317,10 +322,17 @@ class RobotArmEnv:
         :param action: list or numpy between -1 and 1
         :return:
         """
+        # Process the event queue to keep the window responsive
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.close()
+                sys.exit()
+
+        # TODO: Rescale action and also get the action data again
         if isinstance(action, list):
             action = np.array(action)
-        action = np.clip(action, -1.0, 1.0)
-        action *= 10
+        # action = np.clip(action, -1.0, 1.0)
+        # action *= 10
 
         for i, motor in enumerate(self.motors):
             motor.rate = action[i]
