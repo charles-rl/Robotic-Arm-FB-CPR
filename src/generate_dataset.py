@@ -34,11 +34,13 @@ class Dataset:
         # We create a dictionary containing all the tensors and the counter
         payload = {
             'observations': self.observations,
+            'observations_': self.observations_,
             'actions': self.actions,
             'arm_raw_angles': self.arm_raw_angles,
             'arm_raw_velocities': self.arm_raw_velocities,
             'motor_rates': self.motor_rates,
             'motor_forces': self.motor_forces,
+            'dones': self.dones,
             'counter': self.counter
         }
         th.save(payload, filepath)
@@ -52,11 +54,13 @@ class Dataset:
         # Restore the data
         # Note: This assumes the loaded file fits into the size of this dataset
         self.observations = payload['observations']
+        self.observations_ = payload['observations_']
         self.actions = payload['actions']
         self.arm_raw_angles = payload['arm_raw_angles']
         self.arm_raw_velocities = payload['arm_raw_velocities']
         self.motor_rates = payload['motor_rates']
         self.motor_forces = payload['motor_forces']
+        self.dones = payload['dones']
         self.counter = payload['counter']
 
         print(f"Successfully loaded {self.counter} transitions.")
@@ -156,8 +160,9 @@ if __name__ == "__main__":
 
     # episode_data.load(save_location)
     
-    for i in range(n_episodes):
-        do_episode(episode_data)
-        if i % 10 == 0:
-            print(f"Episode {i} out of {n_episodes}")
-            episode_data.save(save_location)
+    # for i in range(n_episodes):
+    #     do_episode(episode_data)
+    #     if i % 10 == 0:
+    #         print(f"Episode {i} out of {n_episodes}")
+    #         episode_data.save(save_location)
+    # episode_data.save(save_location)
