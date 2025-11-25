@@ -131,6 +131,7 @@ class RobotArmEnv:
     # Everything will be relative to the robotic arm's base, that is the 'origin' point
     ARM_LENGTH = 140
     ARM_RADIUS = 25
+    MAX_FORCE = 25_000_000
     # Table base position
     TABLE_RADIUS = 10
     BASE_X, BASE_Y = WIDTH // 2, HEIGHT - TABLE_RADIUS // 2
@@ -194,7 +195,7 @@ class RobotArmEnv:
 
     def _make_simple_motor(self, body1, body2, angular_velocity):
         motor = pymunk.SimpleMotor(body1, body2, angular_velocity)
-        motor.max_force = 25_000_000
+        motor.max_force = self.MAX_FORCE
         self.space.add(motor)
         self.motors.append(motor)
 
@@ -270,8 +271,11 @@ class RobotArmEnv:
     def _get_obs(self):
         """
         :return: numpy array and dict of raw angles
+        Observation is arranged like this:
+        end_pos[0], end_pos[1],
+        cos(theta1), sin(theta1), cos(theta2), sin(theta2), cos(theta3), sin(theta3),
+        angular velocities for each joint; theta1, theta2, theta3
         """
-        # cos(theta), sin(theta), cos, sin,..., angular velocity
         n_links = len(self.links)
         angles = np.zeros((n_links * 2,), dtype=np.float32)
         angular_velocities = np.zeros((n_links,), dtype=np.float32)
@@ -317,9 +321,11 @@ class RobotArmEnv:
 
         return self._get_obs()
 
-    def step(self, action):
+    def step(self, action, task_name: str = None):
         """
         :param action: list or numpy between -1 and 1
+        # TODO: maybe move to init of env
+        :param task_name: change reward based on the task
         :return:
         """
         # Process the event queue to keep the window responsive
@@ -332,21 +338,46 @@ class RobotArmEnv:
         if isinstance(action, list):
             action = np.array(action)
         # action = np.clip(action, -1.0, 1.0)
-        # action *= 10
+        action *= 20.0
 
         for i, motor in enumerate(self.motors):
             motor.rate = action[i]
         self.space.step(self.dt)
         self.timesteps += 1
 
-        # blank for now
-        reward = 0.0
+        # TODO: fix depending on task change reward
+
+        reward = self._get_reward(task_name)
 
         terminated = False
         truncated = bool(self.timesteps >= self.MAX_TIMESTEPS)
         obs, info = self._get_obs()
 
         return obs, reward, terminated, truncated, info
+
+    def _get_reward(self, task_name):
+        # End effector position
+        end_pos = self.links[2].position + pymunk.Vec2d(0, 0).rotated(self.links[2].angle)
+        # where the base arm point is located
+        # then normalize
+        end_pos = (end_pos - pymunk.Vec2d(self.BASE_X, self.BASE_Y - self.ARM_LENGTH)) / self.ARM_LENGTH
+        end_pos = np.array([end_pos.x, -end_pos.y], dtype=np.float32)
+
+        reward = 0.0
+        # "reach_center", "reach_top", "reach_right_top", "reach_left_top", "reach_bottom"
+        if task_name == "reach_center":
+            reward = -np.linalg.norm(np.array([0.0, 0.0]) - end_pos)
+        elif task_name == "reach_top":
+            reward = -np.linalg.norm(np.array([0.0, 2.2]) - end_pos)
+        elif task_name == "reach_right_top":
+            reward = -np.linalg.norm(np.array([1.5, 1.8]) - end_pos)
+        elif task_name == "reach_left_top":
+            reward = -np.linalg.norm(np.array([-1.5, 1.8]) - end_pos)
+        elif task_name == "reach_bottom":
+            reward = -np.linalg.norm(np.array([0.0, -0.5]) - end_pos)
+
+        reward = np.clip(reward / 2.5, -1.0, 1.0)
+        return reward
 
     def sample_action(self):
         return np.random.uniform(low=-1.0, high=1.0, size=(3,))

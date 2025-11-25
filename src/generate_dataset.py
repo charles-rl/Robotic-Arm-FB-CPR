@@ -48,6 +48,7 @@ class Dataset:
 
     def load(self, filepath):
         """Loads data from a file into this dataset instance."""
+        # TODO: Include mean and std in save file for standardization
         print(f"Loading dataset from {filepath}...")
         payload = th.load(filepath)
 
