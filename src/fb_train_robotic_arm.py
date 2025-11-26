@@ -43,6 +43,7 @@ def standardize_array(arr, mean, std):
     return (arr - mean) / std
 
 def rescale_observation(observation):
+    # TODO: add all 2.5 scaling to stats
     observation[:, 0] = normalize_array(observation[:, 0], -2.5, 2.5)
     observation[:, 1] = normalize_array(observation[:, 1], -2.5, 2.5)
     observation[:, -1] = standardize_array(observation[:, -1], DATASET_STATS["observation -1 mean"], DATASET_STATS["observation -1 std"])
@@ -78,15 +79,15 @@ def create_agent(
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-6
-    agent_config.train.lr_actor = 1e-6
+    agent_config.train.lr_b = 1e-4
+    agent_config.train.lr_actor = 1e-4
     agent_config.train.ortho_coef = 1
     agent_config.train.train_goal_ratio = 0.5
     # changed because fb loss explodes
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.99
+    agent_config.train.discount = 0.98
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -137,7 +138,7 @@ class TrainConfig:
     domain_name: str = "walker"
     task_name: str | None = None
     dataset_expl_agent: str = "rnd"
-    num_train_steps: int = 300_000
+    num_train_steps: int = 100_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
     work_dir: str | None = "../models"
@@ -148,7 +149,7 @@ class TrainConfig:
     # eval
     num_eval_episodes: int = 10
     num_inference_samples: int = 50_000  # for z sampling
-    eval_every_steps: int = 1000
+    eval_every_steps: int = 10_000
     eval_tasks: List[str] | None = None
 
     # misc
@@ -292,39 +293,49 @@ class Workspace:
             print(m_dict)
 
     def reward_inference(self, task_name="testing_task_to_be_replaced") -> torch.Tensor:
-        # 1. Sample a batch from the replay buffer
+        # 1. Sample a batch
         num_samples = self.cfg.num_inference_samples
         batch = self.replay_buffer["train"].sample(num_samples)
 
-        # Get the next observations (where the arm ended up)
-        # Shape: [batch_size, 9] (assuming 3 links * 3 vars)
-        next_obs = batch["next"]["observation"]
+        # 2. Extract Normalized Obs
+        # Shape: [batch_size, obs_dim]
+        next_obs_norm = batch["next"]["observation"]
+
+        # 3. DENORMALIZE to Environment Units
+        # Your preprocess used: 2 * ((arr - min) / (max - min)) - 1
+        # Inverse: ((val + 1) / 2) * (max - min) + min
+        # We know min=-2.5, max=2.5 based on your preprocess code
+        gripper_pos_x = ((next_obs_norm[:, 0] + 1) / 2) * (2.5 - (-2.5)) + (-2.5)
+        gripper_pos_y = ((next_obs_norm[:, 1] + 1) / 2) * (2.5 - (-2.5)) + (-2.5)
+
+        # Stack them back for distance calc
+        # Now these are in the same units as your targets (e.g., 1.5, 1.8)
+        gripper_pos_world = torch.stack([gripper_pos_x, gripper_pos_y], dim=1)
 
         # "reach_center", "reach_top", "reach_right_top", "reach_left_top", "reach_bottom"
+        # 4. Define Targets (Ensure these match Environment.py logic)
         if task_name == "reach_center":
             target = torch.tensor([0.0, 0.0], device=self.agent.device)
-            gripper_pos = next_obs[:, :2]
-            rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
         elif task_name == "reach_top":
+            # Note: Check if 2.2 is reachable. Arm length sum = 140+140+70. Base at 0.
+            # Normalized length approx 2.5 max. 2.2 is valid.
             target = torch.tensor([0.0, 2.2], device=self.agent.device)
-            gripper_pos = next_obs[:, :2]
-            rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
         elif task_name == "reach_right_top":
             target = torch.tensor([1.5, 1.8], device=self.agent.device)
-            gripper_pos = next_obs[:, :2]
-            rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
         elif task_name == "reach_left_top":
             target = torch.tensor([-1.5, 1.8], device=self.agent.device)
-            gripper_pos = next_obs[:, :2]
-            rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
         elif task_name == "reach_bottom":
             target = torch.tensor([0.0, -0.5], device=self.agent.device)
-            gripper_pos = next_obs[:, :2]
-            rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
 
+        # 5. Calculate Reward
+        # Note: We use the denormalized world position against the world target
+        rewards = -torch.norm(gripper_pos_world - target, dim=1, keepdim=True)
+
+        # Scale reward similarly to env (optional but good for consistency)
         rewards /= 2.5
-        # 5. Infer z
-        # The agent uses the observations and the calculated rewards to guess 'z'
+
+        # 6. Infer z
+        # The network expects NORMALIZED obs, so we pass the original batch
         z = self.agent._model.reward_inference(
             next_obs=batch["next"]["observation"],
             reward=rewards.float()
