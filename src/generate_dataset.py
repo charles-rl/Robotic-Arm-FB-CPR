@@ -150,8 +150,53 @@ def do_episode(episode_data_):
     env.close()
     del env
 
+def do_episode_eval(task_name):
+    is_render = False
+    env = RobotArmEnv(is_render)
+    robot_arm_lengths_normalized = [1.0, 1.0, 0.5]
+
+    done = False
+    observation, info = env.reset(render=is_render)
+    # if task_name == "reach_center":
+    #     reward = -np.linalg.norm(np.array([0.0, 0.0]) - end_pos)
+    # elif task_name == "reach_top":
+    #     reward = -np.linalg.norm(np.array([0.0, 2.2]) - end_pos)
+    # elif task_name == "reach_right_top":
+    #     reward = -np.linalg.norm(np.array([1.5, 1.8]) - end_pos)
+    # elif task_name == "reach_left_top":
+    #     reward = -np.linalg.norm(np.array([-1.5, 1.8]) - end_pos)
+    # elif task_name == "reach_bottom":
+    #     reward = -np.linalg.norm(np.array([0.0, -0.5]) - end_pos)
+    # target_angles, target_pos_relative = generate_target_angles(robot_arm_lengths_normalized, info, env)
+
+    while not done:
+        error = np.linalg.norm(target_pos_relative - observation[:2])
+        if error < 0.1:
+            target_angles, target_pos_relative = generate_target_angles(robot_arm_lengths_normalized, info, env)
+
+        values, is_stop_motors = env.controller.do_angles(
+            target_angles,
+            info["arm_raw_angles"],
+            info["arm_raw_velocities"]
+        )
+
+        action = np.array([0.0, 0.0, 0.0])
+        if not is_stop_motors:
+            action = values
+
+        observation_, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        episode_data_.update(observation, action, observation_, done, info)
+
+        observation = observation_
+
+        if is_render:
+            env.render()
+    env.close()
+    del env
 
 if __name__ == "__main__":
+    # TODO: Check the actions of the environment, the generated dataset must be unscaled then rescaled afterwards.
     save_location = "../data/episodes.data"
     env_ = RobotArmEnv(False)
     n_episodes = 1_000

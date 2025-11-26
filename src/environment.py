@@ -376,7 +376,7 @@ class RobotArmEnv:
         elif task_name == "reach_bottom":
             reward = -np.linalg.norm(np.array([0.0, -0.5]) - end_pos)
 
-        reward = np.clip(reward / 2.5, -1.0, 1.0)
+        reward /= 2.5
         return reward
 
     def sample_action(self):

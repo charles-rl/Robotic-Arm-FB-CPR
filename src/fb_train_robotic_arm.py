@@ -1,13 +1,16 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the CC BY-NC 4.0 license found in the
-# LICENSE file in the root directory of this source tree.
+# LICENSE file in the root directory of this source tree
 
 from __future__ import annotations
 import torch
 
-# TODO: uncomment when using cuda
-torch.set_float32_matmul_precision("high")
+DEBUG = False
+
+DEVICE = "cpu" if DEBUG else "cuda"
+if DEVICE == "cuda":
+    torch.set_float32_matmul_precision("high")
 
 import numpy as np
 import dataclasses
@@ -24,18 +27,28 @@ from typing import List
 import tyro
 from generate_dataset import Dataset
 from environment import RobotArmEnv
-from torch.utils.tensorboard import SummaryWriter
 
-ALL_TASKS = {
-    "walker": [
-        "walk",
-        "run",
-        "stand",
-    ],
-    "cheetah": ["walk", "run"],
-    "quadruped": ["walk", "run"],
-}
+DATASET_STATS = {}
 
+def load_stats(json_path):
+    global DATASET_STATS
+    with open(json_path, 'r') as f:
+        DATASET_STATS = json.load(f)
+    print(f"Loaded dataset stats from {json_path}")
+
+def normalize_array(arr, minimum, maximum):
+    return 2 * ((arr - minimum) / (maximum - minimum)) - 1
+
+def standardize_array(arr, mean, std):
+    return (arr - mean) / std
+
+def rescale_observation(observation):
+    observation[:, 0] = normalize_array(observation[:, 0], -2.5, 2.5)
+    observation[:, 1] = normalize_array(observation[:, 1], -2.5, 2.5)
+    observation[:, -1] = standardize_array(observation[:, -1], DATASET_STATS["observation -1 mean"], DATASET_STATS["observation -1 std"])
+    observation[:, -2] = standardize_array(observation[:, -2], DATASET_STATS["observation -2 mean"], DATASET_STATS["observation -2 std"])
+    observation[:, -3] = standardize_array(observation[:, -3], DATASET_STATS["observation -3 mean"], DATASET_STATS["observation -3 std"])
+    return observation
 
 def create_agent(
     observation_dim: int,
@@ -56,26 +69,24 @@ def create_agent(
     agent_config.model.archi.z_dim = 50
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
-    # divided original dims by 2 because it is overkill
-    agent_config.model.archi.b.hidden_dim = 128
-    # divided original dims by 8 because it is overkill
-    agent_config.model.archi.f.hidden_dim = 256
-    agent_config.model.archi.actor.hidden_dim = 256
-    # TODO: might consider adding more layers
+    agent_config.model.archi.b.hidden_dim = 256
+    agent_config.model.archi.f.hidden_dim = 1024
+    agent_config.model.archi.actor.hidden_dim = 1024
+    # might consider adding more layers
     agent_config.model.archi.f.hidden_layers = 1
     agent_config.model.archi.actor.hidden_layers = 1
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-4
-    agent_config.train.lr_actor = 1e-4
+    agent_config.train.lr_b = 1e-6
+    agent_config.train.lr_actor = 1e-6
     agent_config.train.ortho_coef = 1
     agent_config.train.train_goal_ratio = 0.5
     # changed because fb loss explodes
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.98
+    agent_config.train.discount = 0.99
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -121,34 +132,33 @@ def set_seed_everywhere(seed):
 @dataclasses.dataclass
 class TrainConfig:
     dataset_root: str = "../data/processed_1000eps.data"
+    dataset_stats_path: str = "../data/means_and_stds.json"
     seed: int = 0
     domain_name: str = "walker"
     task_name: str | None = None
     dataset_expl_agent: str = "rnd"
     num_train_steps: int = 300_000
     load_n_episodes: int = 5_000
-    log_every_updates: int = 200
+    log_every_updates: int = 1000
     work_dir: str | None = "../models"
     log_dir: str | None = "../logs"
 
-    checkpoint_every_steps: int = 1_000
+    checkpoint_every_steps: int = 100_000
 
     # eval
-    num_eval_episodes: int = 3
+    num_eval_episodes: int = 10
     num_inference_samples: int = 50_000  # for z sampling
-    eval_every_steps: int = 200
+    eval_every_steps: int = 1000
     eval_tasks: List[str] | None = None
 
     # misc
     compile: bool = False
     cudagraphs: bool = False
-    # TODO: Turn back to cuda once in server
-    device: str = "cuda"
-    # device: str = "cpu"
+    device: str = DEVICE
 
     # WANDB
-    use_wandb: bool = False
-    wandb_ename: str | None = "your_wandb_username"
+    use_wandb: bool = True
+    wandb_ename: str | None = "charlessosmena0-academia-sinica"
     wandb_gname: str | None = "fb-cpr-robot-arm"
     wandb_pname: str | None = "fb-cpr-robot-arm"
     wandb_name_prefix: str | None = None
@@ -191,13 +201,9 @@ class Workspace:
         with (self.work_dir / "config.json").open("w") as f:
             json.dump(dataclasses.asdict(self.cfg), f, indent=4)
 
-        self.writer = SummaryWriter(log_dir=self.cfg.log_dir)
+        load_stats(self.cfg.dataset_stats_path)
 
-    def train(self):
-        self.start_time = time.time()
-        self.train_offline()
-
-    def train_offline(self) -> None:
+    def init_replay_buffer(self):
         self.replay_buffer = {}
 
         # USE CUSTOM LOADER FOR MY ENVIRONMENT
@@ -209,9 +215,14 @@ class Workspace:
 
         # Debug print to verify
         print(self.replay_buffer["train"])
-
         del data
 
+    def train(self):
+        self.start_time = time.time()
+        self.train_offline()
+
+    def train_offline(self) -> None:
+        self.init_replay_buffer()
         total_metrics = None
         fps_start_time = time.time()
         for t in tqdm(range(0, int(self.cfg.num_train_steps))):
@@ -240,9 +251,6 @@ class Workspace:
                         step=t,
                     )
                 print(m_dict)
-                for k, v in m_dict.items():
-                    if not isinstance(v, str):
-                        self.writer.add_scalar(f"train/{k}", v, t)
                 total_metrics = None
                 fps_start_time = time.time()
             if t % self.cfg.checkpoint_every_steps == 0:
@@ -263,6 +271,7 @@ class Workspace:
                 while not done:
                     with torch.no_grad(), eval_mode(self.agent._model):
                         obs = torch.tensor(observation.reshape(1, -1), device=self.agent.device, dtype=torch.float32)
+                        obs = rescale_observation(obs)
                         action = self.agent.act(obs=obs, z=z, mean=True).cpu().numpy()[0]
                     observation_, reward, terminated, truncated, info = eval_env.step(action, task_name=task)
                     done = terminated or truncated
@@ -281,9 +290,6 @@ class Workspace:
                 )
             m_dict["task"] = task
             print(m_dict)
-            for k, v in m_dict.items():
-                if not isinstance(v, str):
-                    self.writer.add_scalar(f"{m_dict['task']}/{k}", v)
 
     def reward_inference(self, task_name="testing_task_to_be_replaced") -> torch.Tensor:
         # 1. Sample a batch from the replay buffer
@@ -316,7 +322,7 @@ class Workspace:
             gripper_pos = next_obs[:, :2]
             rewards = -torch.norm(gripper_pos - target, dim=1, keepdim=True)
 
-        rewards = torch.clamp(rewards / 2.5, -1.0, 1.0)
+        rewards /= 2.5
         # 5. Infer z
         # The agent uses the observations and the calculated rewards to guess 'z'
         z = self.agent._model.reward_inference(
@@ -341,5 +347,15 @@ if __name__ == "__main__":
         cudagraphs=config.cudagraphs,
     )
 
+    if DEBUG:
+        config.log_every_updates = 100
+        config.eval_every_steps = 100
+        config.num_eval_episodes = 2
+
     ws = Workspace(config, agent_cfg=agent_config)
     ws.train()
+
+    # To eval
+    # ws.init_replay_buffer()
+    # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
+    # ws.eval("reach_left_top")
