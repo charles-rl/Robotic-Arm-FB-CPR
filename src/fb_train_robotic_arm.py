@@ -42,14 +42,13 @@ def normalize_array(arr, minimum, maximum):
 def standardize_array(arr, mean, std):
     return (arr - mean) / std
 
-def rescale_observation(observation):
-    # TODO: add all 2.5 scaling to stats
-    observation[:, 0] = normalize_array(observation[:, 0], -2.5, 2.5)
-    observation[:, 1] = normalize_array(observation[:, 1], -2.5, 2.5)
-    observation[:, -1] = standardize_array(observation[:, -1], DATASET_STATS["observation -1 mean"], DATASET_STATS["observation -1 std"])
-    observation[:, -2] = standardize_array(observation[:, -2], DATASET_STATS["observation -2 mean"], DATASET_STATS["observation -2 std"])
-    observation[:, -3] = standardize_array(observation[:, -3], DATASET_STATS["observation -3 mean"], DATASET_STATS["observation -3 std"])
-    return observation
+# def rescale_observation(observation):
+#     observation[:, 0] = normalize_array(observation[:, 0], -2.5, 2.5)
+#     observation[:, 1] = normalize_array(observation[:, 1], -2.5, 2.5)
+#     observation[:, -1] = standardize_array(observation[:, -1], DATASET_STATS["observation -1 mean"], DATASET_STATS["observation -1 std"])
+#     observation[:, -2] = standardize_array(observation[:, -2], DATASET_STATS["observation -2 mean"], DATASET_STATS["observation -2 std"])
+#     observation[:, -3] = standardize_array(observation[:, -3], DATASET_STATS["observation -3 mean"], DATASET_STATS["observation -3 std"])
+#     return observation
 
 def create_agent(
     observation_dim: int,
@@ -62,7 +61,7 @@ def create_agent(
     agent_config.model.obs_dim = observation_dim
     agent_config.model.action_dim = action_dim  # number integer
     agent_config.model.device = device
-    agent_config.model.norm_obs = False  # False because observation is normalized
+    agent_config.model.norm_obs = True
     agent_config.model.seq_length = 1
     agent_config.train.batch_size = 1024
     # archi
@@ -73,7 +72,6 @@ def create_agent(
     agent_config.model.archi.b.hidden_dim = 256
     agent_config.model.archi.f.hidden_dim = 1024
     agent_config.model.archi.actor.hidden_dim = 1024
-    # might consider adding more layers
     agent_config.model.archi.f.hidden_layers = 1
     agent_config.model.archi.actor.hidden_layers = 1
     agent_config.model.archi.b.hidden_layers = 2
@@ -272,7 +270,7 @@ class Workspace:
                 while not done:
                     with torch.no_grad(), eval_mode(self.agent._model):
                         obs = torch.tensor(observation.reshape(1, -1), device=self.agent.device, dtype=torch.float32)
-                        obs = rescale_observation(obs)
+                        # obs = rescale_observation(obs)
                         action = self.agent.act(obs=obs, z=z, mean=True).cpu().numpy()[0]
                     observation_, reward, terminated, truncated, info = eval_env.step(action, task_name=task)
                     done = terminated or truncated
@@ -299,18 +297,11 @@ class Workspace:
 
         # 2. Extract Normalized Obs
         # Shape: [batch_size, obs_dim]
-        next_obs_norm = batch["next"]["observation"]
-
-        # 3. DENORMALIZE to Environment Units
-        # Your preprocess used: 2 * ((arr - min) / (max - min)) - 1
-        # Inverse: ((val + 1) / 2) * (max - min) + min
-        # We know min=-2.5, max=2.5 based on your preprocess code
-        gripper_pos_x = ((next_obs_norm[:, 0] + 1) / 2) * (2.5 - (-2.5)) + (-2.5)
-        gripper_pos_y = ((next_obs_norm[:, 1] + 1) / 2) * (2.5 - (-2.5)) + (-2.5)
+        next_obs = batch["next"]["observation"]
 
         # Stack them back for distance calc
         # Now these are in the same units as your targets (e.g., 1.5, 1.8)
-        gripper_pos_world = torch.stack([gripper_pos_x, gripper_pos_y], dim=1)
+        gripper_pos_world = torch.stack([next_obs[:, 0], next_obs[:, 1]], dim=1)
 
         # "reach_center", "reach_top", "reach_right_top", "reach_left_top", "reach_bottom"
         # 4. Define Targets (Ensure these match Environment.py logic)
@@ -328,11 +319,8 @@ class Workspace:
             target = torch.tensor([0.0, -0.5], device=self.agent.device)
 
         # 5. Calculate Reward
-        # Note: We use the denormalized world position against the world target
-        rewards = -torch.norm(gripper_pos_world - target, dim=1, keepdim=True)
-
-        # Scale reward similarly to env (optional but good for consistency)
-        rewards /= 2.5
+        dist = torch.norm(gripper_pos_world - target, dim=1, keepdim=True)
+        rewards = torch.exp(-(dist ** 2) / (1.0 ** 2))
 
         # 6. Infer z
         # The network expects NORMALIZED obs, so we pass the original batch
@@ -367,6 +355,7 @@ if __name__ == "__main__":
     ws.train()
 
     # To eval
+    # print("Starting Evaluation with Fixed Inference...")
     # ws.init_replay_buffer()
     # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
-    # ws.eval("reach_left_top")
+    # ws.eval(0)
