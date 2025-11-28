@@ -6,6 +6,7 @@
 from __future__ import annotations
 import torch
 
+EVAL = False
 DEBUG = False
 
 DEVICE = "cpu" if DEBUG else "cuda"
@@ -66,7 +67,7 @@ def create_agent(
     agent_config.train.batch_size = 1024
     # archi
     # opted for 50 because I don't need a large latent size
-    agent_config.model.archi.z_dim = 50
+    agent_config.model.archi.z_dim = 100
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -77,8 +78,8 @@ def create_agent(
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-4
-    agent_config.train.lr_actor = 1e-4
+    agent_config.train.lr_b = 1e-6
+    agent_config.train.lr_actor = 1e-6
     agent_config.train.ortho_coef = 1
     agent_config.train.train_goal_ratio = 0.5
     # changed because fb loss explodes
@@ -130,13 +131,13 @@ def set_seed_everywhere(seed):
 
 @dataclasses.dataclass
 class TrainConfig:
-    dataset_root: str = "../data/processed_1000eps.data"
+    dataset_root: str = "../data/processed_act_only_1000eps.data"
     dataset_stats_path: str = "../data/means_and_stds.json"
     seed: int = 0
     domain_name: str = "walker"
     task_name: str | None = None
     dataset_expl_agent: str = "rnd"
-    num_train_steps: int = 100_000
+    num_train_steps: int = 600_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
     work_dir: str | None = "../models"
@@ -145,7 +146,7 @@ class TrainConfig:
     checkpoint_every_steps: int = 100_000
 
     # eval
-    num_eval_episodes: int = 10
+    num_eval_episodes: int = 5
     num_inference_samples: int = 50_000  # for z sampling
     eval_every_steps: int = 10_000
     eval_tasks: List[str] | None = None
@@ -200,7 +201,9 @@ class Workspace:
         with (self.work_dir / "config.json").open("w") as f:
             json.dump(dataclasses.asdict(self.cfg), f, indent=4)
 
+        # my changes
         load_stats(self.cfg.dataset_stats_path)
+        self.best_avg_reward = float("-inf")
 
     def init_replay_buffer(self):
         self.replay_buffer = {}
@@ -254,11 +257,13 @@ class Workspace:
                 fps_start_time = time.time()
             if t % self.cfg.checkpoint_every_steps == 0:
                 self.agent.save(str(self.work_dir / "checkpoint"))
+        self.eval(self.cfg.num_train_steps)
         self.agent.save(str(self.work_dir / "checkpoint"))
         return
 
     def eval(self, t):
-        for task in self.cfg.eval_tasks:
+        all_tasks_total_reward = np.zeros((len(self.cfg.eval_tasks),), dtype=np.float64)
+        for task_idx, task in enumerate(self.cfg.eval_tasks):
             z = self.reward_inference(task).reshape(1, -1)
 
             num_ep = self.cfg.num_eval_episodes
@@ -270,7 +275,6 @@ class Workspace:
                 while not done:
                     with torch.no_grad(), eval_mode(self.agent._model):
                         obs = torch.tensor(observation.reshape(1, -1), device=self.agent.device, dtype=torch.float32)
-                        # obs = rescale_observation(obs)
                         action = self.agent.act(obs=obs, z=z, mean=True).cpu().numpy()[0]
                     observation_, reward, terminated, truncated, info = eval_env.step(action, task_name=task)
                     done = terminated or truncated
@@ -282,6 +286,7 @@ class Workspace:
                 "reward": np.mean(total_reward),
                 "reward#std": np.std(total_reward),
             }
+            all_tasks_total_reward[task_idx] = m_dict["reward"]
             if self.cfg.use_wandb:
                 wandb.log(
                     {f"{task}/{k}": v for k, v in m_dict.items()},
@@ -289,6 +294,11 @@ class Workspace:
                 )
             m_dict["task"] = task
             print(m_dict)
+        all_tasks_avg_reward = np.mean(all_tasks_total_reward)
+        if all_tasks_avg_reward > self.best_avg_reward:
+            self.best_avg_reward = all_tasks_avg_reward
+            self.agent.save(str(self.work_dir / "best checkpoint"))
+
 
     def reward_inference(self, task_name="testing_task_to_be_replaced") -> torch.Tensor:
         # 1. Sample a batch
@@ -346,16 +356,18 @@ if __name__ == "__main__":
         cudagraphs=config.cudagraphs,
     )
 
-    if DEBUG:
+    if DEBUG or EVAL:  # TODO: add debug and eval to config
         config.log_every_updates = 100
         config.eval_every_steps = 100
         config.num_eval_episodes = 2
+        config.use_wandb = False
 
     ws = Workspace(config, agent_cfg=agent_config)
-    ws.train()
+    if not (EVAL or DEBUG):
+        ws.train()
 
-    # To eval
-    # print("Starting Evaluation with Fixed Inference...")
-    # ws.init_replay_buffer()
-    # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
-    # ws.eval(0)
+    if EVAL:
+        print("Starting Evaluation...")
+        ws.init_replay_buffer()
+        ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
+        ws.eval(0)
