@@ -4,7 +4,7 @@ import mujoco
 import mujoco.viewer
 
 class RobotArmEnv(gymnasium.Env):
-    MAX_TIMESTEPS = 1000
+    MAX_TIMESTEPS = 100
     FRAME_SKIP = 17
     def __init__(self, render_mode=None, reward_type="sparse", task="reach", control_mode="delta_joint_position"):
         """
@@ -112,6 +112,7 @@ class RobotArmEnv(gymnasium.Env):
         if self.task == "reach":
             obs_dims += 3
             actions_dims -= 1
+            self.MAX_TIMESTEPS = 100  # lesser time needed
 
         # 64 bit chosen for 64 bit computers
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
@@ -198,7 +199,7 @@ class RobotArmEnv(gymnasium.Env):
             if self.reward_type == "sparse":
                 return 1.0 if distance < 0.05 else 0.0
             elif self.reward_type == "dense":
-                return -distance
+                return 1.0 - np.tanh(3.0 * distance)
 
         elif self.task == "pick_place":
             pass

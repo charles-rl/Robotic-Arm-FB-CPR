@@ -3,8 +3,9 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import wandb
 from wandb.integration.sb3 import WandbCallback
+from stable_baselines3.common.monitor import Monitor
 
-from src.environment import RobotArmEnv
+from environment import RobotArmEnv
 
 DEBUG = False
 
@@ -31,10 +32,10 @@ def train_agent():
         buffer_size = 50_000
         total_timesteps = 10_000
     else:
-        log_interval = 4
+        log_interval = 10
         batch_size = 256
         buffer_size = 1_000_000
-        total_timesteps = 100_000
+        total_timesteps = 200_000
 
     # 1. Initialize WandB
     run = wandb.init(
@@ -50,8 +51,8 @@ def train_agent():
     )
 
     # 2. Create Env
-    env = DummyVecEnv([lambda: RobotArmEnv(render_mode=None, reward_type="dense", task="reach")])
-    env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
+    env = DummyVecEnv([lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task="reach"))])
+    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
     # 3. Define the Algorithm
     model = SAC(
