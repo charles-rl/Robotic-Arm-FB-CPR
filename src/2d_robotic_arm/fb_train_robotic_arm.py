@@ -6,13 +6,14 @@
 from __future__ import annotations
 import torch
 
-EVAL = False
-DEBUG = False
+EVAL = True
+DEBUG = True
 
 DEVICE = "cpu" if DEBUG else "cuda"
 if DEVICE == "cuda":
     torch.set_float32_matmul_precision("high")
 
+import pygame
 import numpy as np
 import dataclasses
 from metamotivo.buffers.buffers import DictBuffer
@@ -28,28 +29,6 @@ from typing import List
 import tyro
 from generate_dataset import Dataset
 from environment import RobotArmEnv
-
-DATASET_STATS = {}
-
-def load_stats(json_path):
-    global DATASET_STATS
-    with open(json_path, 'r') as f:
-        DATASET_STATS = json.load(f)
-    print(f"Loaded dataset stats from {json_path}")
-
-def normalize_array(arr, minimum, maximum):
-    return 2 * ((arr - minimum) / (maximum - minimum)) - 1
-
-def standardize_array(arr, mean, std):
-    return (arr - mean) / std
-
-# def rescale_observation(observation):
-#     observation[:, 0] = normalize_array(observation[:, 0], -2.5, 2.5)
-#     observation[:, 1] = normalize_array(observation[:, 1], -2.5, 2.5)
-#     observation[:, -1] = standardize_array(observation[:, -1], DATASET_STATS["observation -1 mean"], DATASET_STATS["observation -1 std"])
-#     observation[:, -2] = standardize_array(observation[:, -2], DATASET_STATS["observation -2 mean"], DATASET_STATS["observation -2 std"])
-#     observation[:, -3] = standardize_array(observation[:, -3], DATASET_STATS["observation -3 mean"], DATASET_STATS["observation -3 std"])
-#     return observation
 
 def create_agent(
     observation_dim: int,
@@ -132,7 +111,7 @@ def set_seed_everywhere(seed):
 @dataclasses.dataclass
 class TrainConfig:
     dataset_root: str = "../data/processed_act_only_1000eps.data"
-    dataset_stats_path: str = "../data/means_and_stds.json"
+    dataset_stats_path: str = "../../data/2d_robotic_arm/means_and_stds.json"
     seed: int = 0
     domain_name: str = "walker"
     task_name: str | None = None
@@ -140,8 +119,8 @@ class TrainConfig:
     num_train_steps: int = 600_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
-    work_dir: str | None = "../models"
-    log_dir: str | None = "../logs"
+    work_dir: str | None = "../../models"
+    log_dir: str | None = "../../logs"
 
     checkpoint_every_steps: int = 100_000
 
@@ -202,7 +181,6 @@ class Workspace:
             json.dump(dataclasses.asdict(self.cfg), f, indent=4)
 
         # my changes
-        load_stats(self.cfg.dataset_stats_path)
         self.best_avg_reward = float("-inf")
 
     def init_replay_buffer(self):
@@ -264,14 +242,16 @@ class Workspace:
     def eval(self, t):
         all_tasks_total_reward = np.zeros((len(self.cfg.eval_tasks),), dtype=np.float64)
         for task_idx, task in enumerate(self.cfg.eval_tasks):
+            frames = []
+            counter = 0
             z = self.reward_inference(task).reshape(1, -1)
 
             num_ep = self.cfg.num_eval_episodes
             total_reward = np.zeros((num_ep,), dtype=np.float64)
             for ep in range(num_ep):
-                eval_env = RobotArmEnv(False)
+                eval_env = RobotArmEnv(EVAL) # TODO: Fix this render mode
                 done = False
-                observation, info = eval_env.reset()
+                observation, info = eval_env.reset(render=EVAL)
                 while not done:
                     with torch.no_grad(), eval_mode(self.agent._model):
                         obs = torch.tensor(observation.reshape(1, -1), device=self.agent.device, dtype=torch.float32)
@@ -280,6 +260,20 @@ class Workspace:
                     done = terminated or truncated
                     observation = observation_
                     total_reward[ep] += reward
+                    # TODO: Fix this GIF saving method
+                    if EVAL:
+                        eval_env.render()
+                        if counter % 2 == 0:
+                            frame_surface = eval_env.screen.copy()
+                            frames.append(np.array(pygame.surfarray.pixels3d(frame_surface)).transpose(1, 0, 2))
+                        counter += 1
+
+                import imageio
+
+                print("Saving GIF...")
+                imageio.mimsave(f"{task}.gif", frames, fps=eval_env.FPS // 2)
+                print("GIF saved!")
+
                 eval_env.close()
                 del eval_env
             m_dict = {
@@ -298,7 +292,6 @@ class Workspace:
         if all_tasks_avg_reward > self.best_avg_reward:
             self.best_avg_reward = all_tasks_avg_reward
             self.agent.save(str(self.work_dir / "best checkpoint"))
-
 
     def reward_inference(self, task_name="testing_task_to_be_replaced") -> torch.Tensor:
         # 1. Sample a batch
@@ -359,7 +352,7 @@ if __name__ == "__main__":
     if DEBUG or EVAL:  # TODO: add debug and eval to config
         config.log_every_updates = 100
         config.eval_every_steps = 100
-        config.num_eval_episodes = 2
+        config.num_eval_episodes = 1
         config.use_wandb = False
 
     ws = Workspace(config, agent_cfg=agent_config)
@@ -367,7 +360,14 @@ if __name__ == "__main__":
         ws.train()
 
     if EVAL:
-        print("Starting Evaluation...")
+        # print("Starting  Evaluation...")
+        # ws.init_replay_buffer()
+        # ws.agent = FBAgent.load(str(ws.work_dir / "server/checkpoint"), device=ws.cfg.device)
+        # # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
+        # ws.eval(0)
+
+        print("Starting Best Evaluation...")
         ws.init_replay_buffer()
-        ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
+        ws.agent = FBAgent.load(str(ws.work_dir / "server/best checkpoint"), device=ws.cfg.device)
+        # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
         ws.eval(0)

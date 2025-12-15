@@ -1,481 +1,375 @@
-import pymunk
-import pymunk.pygame_util
-import pygame
-import sys
 import numpy as np
+import gymnasium
+import mujoco
+import mujoco.viewer
 
-def simp_angle(a):
-    return (a + np.pi) % (2 * np.pi) - np.pi
-
-def simulation2theoretical_angles(angles):
-    """
-    :param angles: [l1, l2, l3]: numpy array, angles are relative to the previous link's angles
-    :return:
-    """
-    if isinstance(angles, list):
-        angles = np.array(angles)
-
-    angle1 = -angles[0]
-    angle2 = -angles[0] + angles[1]
-    angle3 = -angles[2] + np.pi + angles[1]
-    return np.array([angle1, angle2, angle3])
-
-def theoretical2simulation_angles(angles):
-    """
-    :param angles: [l1, l2, l3]: numpy array, angles are relative to the global positive x-axis direction
-    :return:
-    """
-    if isinstance(angles, list):
-        angles = np.array(angles)
-
-    angle1 = -angles[0]
-    angle2 = -angles[0] - angles[1]
-    angle3 = -angles[0] - angles[1] - angles[2] + np.pi
-    return np.array([angle1, angle2, angle3])
-
-def forward_kinematics(t1, t2, t3, l1, l2, l3):
-    x = l1 * np.cos(t1) + l2 * np.cos(t1 + t2) + l3 * np.cos(t1 + t2 + t3)
-    y = l1 * np.sin(t1) + l2 * np.sin(t1 + t2) + l3 * np.sin(t1 + t2 + t3)
-    return np.array([x, y])
-
-def inverse_kinematics(target, lengths, curr_angles, min_error=1e-3, max_iterations=10000, alpha=0.05):
-    t1, t2, t3 = curr_angles
-    l1, l2, l3 = lengths
-    for _ in range(max_iterations):
-        current_pos = forward_kinematics(t1, t2, t3, l1, l2, l3)
-        error = target - current_pos
-        if np.linalg.norm(error) < min_error:
-            break
-
-        # Jacobian transpose method
-        s1 = np.sin(t1)
-        c1 = np.cos(t1)
-        s12 = np.sin(t1 + t2)
-        c12 = np.cos(t1 + t2)
-        s123 = np.sin(t1 + t2 + t3)
-        c123 = np.cos(t1 + t2 + t3)
-        J_t = np.array([
-            [-l1 * s1 - l2 * s12 - l3 * s123, -l2 * s12 - l3 * s123, -l3 * s123],
-            [l1 * c1 + l2 * c12 + l3 * c123, l2 * c12 + l3 * c123, l3 * c123]
-        ]).T
-        delta_theta = alpha * J_t @ error
-        t1 += delta_theta[0]
-        t2 += delta_theta[1]
-        t3 += delta_theta[2]
-    return np.array([t1, t2, t3])
-
-
-class PIDController:
-    def __init__(self, kp, kd, ki, dt):
-        self.kp = kp
-        self.kd = kd
-        self.ki = ki
-        self.dt = dt
-        self.i_err = 0.0
-
-    def get_value(self, error, velocity):
-        # It is supposed to be
-        # val = kp * err - kd * vel + ki * i_err
-        # but it is opposite in this env
-        # val = -kp * err + kd * vel - ki * i_err
-        self.i_err += error * self.dt
-        # print(-self.kp * error, self.kd * velocity, -self.i_err)
-        val = -self.kp * error + self.kd * velocity - self.ki * self.i_err
-        if abs(val) < 0.01:
-            val = 0.0
-            self.i_err = 0.0
-        return val
-
-    def position_to_angles(self, x, y, lengths, curr_angles):
-        # Simulation to theoretical
-        target_angles = inverse_kinematics(np.array([x, y]),
-                                           lengths,
-                                           simulation2theoretical_angles(curr_angles))
-        return target_angles
-
-    def do_angles(self, desired_angles, angles, angular_velocities):
-        """
-        must be in order arm1, arm2, arm3
-        base to tip of arm
-        must be numpy
-        :param desired_angles:
-        :param angles:
-        :param angular_velocities:
-        :return:
-        """
-        error1 = desired_angles[0] - angles[0]
-        velo1 = angular_velocities[0]
-        value1 = self.get_value(error1, velo1)
-
-        error2 = desired_angles[1] - angles[1]
-        velo2 = angular_velocities[1]
-        value2 = self.get_value(error2, velo2)
-
-        error3 = desired_angles[2] - angles[2]
-        velo3 = angular_velocities[2]
-        value3 = self.get_value(error3, velo3)
-
-        # print(abs(error1), abs(error2), abs(error3), abs(velo1), abs(velo2), abs(velo3))
-        errors = np.array([error1, error2, error3])
-        velocities = np.array([velo1, velo2, velo3])
-        min_errors = np.array([0.05, 0.05, 0.15])
-        min_velos = np.array([0.1, 0.1, 0.1])
-        is_stop_motors = bool(np.logical_and(np.all(abs(errors) < min_errors), np.all(abs(velocities) < min_velos)))
-        return np.array([value1, value2, value3]), is_stop_motors
-
-
-class RobotArmEnv:
+class RobotArmEnv(gymnasium.Env):
     MAX_TIMESTEPS = 1000
-    FPS = 60
-    WIDTH, HEIGHT = 800, 600
-    # Everything will be relative to the robotic arm's base, that is the 'origin' point
-    ARM_LENGTH = 140
-    ARM_RADIUS = 25
-    MAX_FORCE = 25_000_000
-    # Table base position
-    TABLE_RADIUS = 10
-    BASE_X, BASE_Y = WIDTH // 2, HEIGHT - TABLE_RADIUS // 2
+    FRAME_SKIP = 17
+    def __init__(self, render_mode=None, reward_type="sparse", task="reach", control_mode="delta_joint_position"):
+        """
+        ## Robot Specification
+        - **Robot:** SO-101 (Standard Open Manipulator).
+        - **Dimensions:** 6 Total Degrees of Freedom (DOF).
+            - **Arm:** 6 Joints (Base, Shoulder, Upper_Arm, Lower_Arm, Wrist, Gripper).
+        - Simulation time step: 0.002 seconds
+        - Robot Control Frequency: 30 Hz (0.034 seconds, 29.41 FPS)
 
-    # Color scheme - minimalistic dark theme
-    BG_COLOR = (20, 20, 25)  # Very dark blue-gray
-    TABLE_COLOR = (60, 60, 70)  # Subtle gray for table
-    ARM1_COLOR = (100, 150, 255, 255)  # Soft blue
-    ARM2_COLOR = (150, 100, 255, 255)  # Soft purple
-    ARM3_COLOR = (255, 100, 150, 255)  # Soft pink
-    JOINT_COLOR = (200, 200, 210)  # Light gray for joints
-    TEXT_COLOR = (180, 180, 190)  # Muted text
-    TARGET_COLOR = (255, 200, 40)
+        ## State Space (45 dims)
+        - **Robot Proprioception (15 dims):**
+            - **Joint Positions (5 dims):** Normalized to based on physical joint limits. `[-1, 1]`
+            - **Joint Velocities (5 dims):** For the FB representation to understand momentum and dynamics.
+            - **Gripper State (2 dims):** Joint Position and Velocity.
+            - **End-Effector (EE) Position (3 dims):** Cartesian coordinates relative to the base. $(x, y, z)$        ```
+                - *Note:* Most VLA models (including ACT, Diffusion Policy, and SmolVLA) include EE position in the state vector. It helps the network learn faster because it doesn't have to internally calculate Forward Kinematics (converting angles to XYZ) from scratch.
+        - **Object States (30 dims):**
+            - **Cube A & Cube B Position (3 dims each):** $(x, y, z)$
+            - **Cube A & Cube B Orientation (6 dims each):** **Rotate6D** representation. This is continuous and easier for NNs to learn than Quaternions.
+                - Idea from this paper: https://arxiv.org/pdf/2510.10274
+                - **Rotate6D** reference paper: https://arxiv.org/pdf/1812.07035
+            - **Cube A & Cube B Velocities (6 dims each):** Linear/Angular velocities
 
-    def __init__(self, render):
-        # Initialize Pygame
-        pygame.init()
-        if render:
-            pygame.display.set_caption("2D Robotic Arm - Pymunk")
-            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-            self.draw_options = pymunk.pygame_util.DrawOptions(self.screen)
-        self.clock = pygame.time.Clock()
-        self.dt = 1 / float(self.FPS)
+        ## Action Space
+        *Design Choice: We will code the environment to support switching between Option B and C to test which yields better FB representations.*
+        - **Option A: Absolute Joint Position (SmolVLA)**
+            - **Action:** Direct target joint angles `[q1, q2, q3, q4, q5, gripper]`.
+            - **Context:** This is what SmolVLA uses.
+            - SmolVLA only makes this work because they use **Action Chunking** (predicting 50 steps at a time) and Temporal Ensembling to smooth the path. Without chunking, a single-step policy using Absolute Position will cause the robot to jitter and vibrate violently.
+            - Documented for comparison, but will not be used
+        - **Option B: Delta End-Effector (Gymnasium)**
+            - **Action:** `[dx, dy, dz, d_roll, d_pitch, d_yaw, gripper]`.
+            - **Logic:** The network commands the hand to move in 3D space. We use an Inverse Kinematics (IK) solver to figure out the joint angles.
+            - **Pros:** Very easy for the policy to learn "Pick" (just move Z down).
+            - **Cons:** Harder to implement (needs stable IK).
+            - **Will be used in the beginning to test policy training**
+        - **Option C: Delta Joint Position (Changed SmolVLA)**
+            - **Action:** `[dq1, dq2, dq3, dq4, dq5, gripper]`.
+            - **Logic:** `next_pos = current_pos + (action * scale)`.
+            - **Pros:** No IK needed. Smoother than Option A.
+            - **Primary candidate for experimentation.**
+        - **Binary Gripper**
+            - Simulated grippers are finicky.
+            - Logic:
+                - `If action > 0:` Command max width (Open).
+                - `If action < 0:` Command min width (Closed).
+            - *Delta control for grippers usually results in the object slipping because the network "forgets" to keep applying closing pressure.*
 
-        # Initialize Pymunk space
-        self.space = pymunk.Space()
-        self.space.gravity = (0, 9.81)
+        Joint Names:
+            shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
+        Link/Body Names:
+            base, shoulder, upper_arm, lower_arm, wrist, gripper, moving_jaw_so101_v1
+        Control Modes:
+            Option B: delta_end_effector
+            Option C: delta_joint_position
+        Tasks:
+            base - (45 dims) default for FB training
+            reach - for testing, reach random target position, observation dim has relative target position
+            pick - for testing, pick cube and reach target position, observation dim has relative target position
+        reward types:
+            sparse
+            dense
+        """
+        self.model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
+        self.data = mujoco.MjData(self.model)
+        self.viewer = None
+        self.task = task
+        self.reward_type = reward_type
 
-        # Environment parameters
-        # arm 1 reference angle is at the positive x-axis, counter-clockwise negative
-        # arm 2 reference angle is at the positive x-axis, counter-clockwise negative
-        # arm 3 reference angle is at the negative x-axis, counter-clockwise negative
-        self.init_angles = np.array([-np.pi - 0.22, -0.22, -np.pi + 0.22])  # similar to lerobot position
-        # self.init_angles = np.array([-np.pi / 2 + 0.1, 0.2, -np.pi // 2 + 0.22])
-        # self.init_angles = np.array([-np.pi / 2, -np.pi / 2, np.pi / 2])
-        self.target_pos_world = np.array([0, 0])
+        self.joint_names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
+        self.joint_min = self.model.jnt_range[:6, 0]
+        self.joint_max = self.model.jnt_range[:6, 1]
+        self.cube_a_id = None
+        self.cube_b_id = None
+        self.target_pos = np.zeros(3)
+        control_modes = ("delta_joint_position", "delta_end_effector")
+        self.control_mode = control_modes.index(control_mode)
+        self.render_mode = render_mode
+
+        # Initialize positions - will be set randomly in reset()
+        self._arm_start_pos = np.array([
+            0.0,
+            self.joint_min[1],
+            self.joint_max[2],
+            np.random.uniform(0.4, 0.6),
+            0.0,
+            self.joint_min[-1],  # Close gripper
+        ], dtype=np.float32)
+
+        self.cube_start_positions = [
+            [-0.25, 0.00, 0.43],  # 1. Center
+            [-0.25, 0.15, 0.43],  # 2. Left
+            [-0.25, -0.15, 0.43],  # 3. Right
+            [-0.10, 0.10, 0.43],  # 4. Far Left
+            [-0.10, -0.10, 0.43],  # 5. Far Right
+        ]
+        self.rot6d_mat = np.zeros(9)
+        self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
+        self.base_pos_world = None
         self.timesteps = 0
-        self.links = []
-        self.joints = []
-        self.motors = []
-        self.observation_space = (11,)
-        self.action_space = (3,)
-        self.controller = PIDController(2.2, 4.75, 0.01, self.dt)
 
-    def _make_segment(self, position: pymunk.Vec2d, vector: pymunk.Vec2d, radius: int, color: tuple):
-        body = pymunk.Body()
-        body.position = position
-        shape = pymunk.Segment(body, (0, 0), vector, radius)
-        shape.density = 0.2
-        shape.elasticity = 0.03
-        shape.filter = pymunk.ShapeFilter(group=1)
-        shape.color = color
-        self.space.add(body, shape)
-        self.links.append(body)
+        obs_dims = 45
+        actions_dims = 6
+        if self.task == "reach":
+            obs_dims += 3
+            actions_dims -= 1
 
-    def _make_pivot_joint(self, body1, body2, point_position1=(0, 0), point_position2=(0, 0), collide=True):
-        joint = pymunk.PinJoint(body1, body2, point_position1, point_position2)
-        joint.collide_bodies = collide
-        self.space.add(joint)
-        self.joints.append(joint)
+        # 64 bit chosen for 64 bit computers
+        self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
+        self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
 
-    def _make_simple_motor(self, body1, body2, angular_velocity):
-        motor = pymunk.SimpleMotor(body1, body2, angular_velocity)
-        motor.max_force = self.MAX_FORCE
-        self.space.add(motor)
-        self.motors.append(motor)
+    def _get_cube_data(self, body_id):
+        rel_pos = self.data.xpos[body_id] - self.base_pos_world
 
-    def _limit_joint(self, body1, body2, minimum, maximum, collide=True):
-        """Minimum and maximum are in rads"""
-        joint = pymunk.RotaryLimitJoint(body1, body2, minimum, maximum)
-        joint.collide_bodies = collide
-        self.space.add(joint)
-        # self.joints.append(joint)
+        # Orientation -> Rotate6D (6 dims)
+        quat = self.data.xquat[body_id]
+        mujoco.mju_quat2Mat(self.rot6d_mat, quat)
+        rot6d = self.rot6d_mat[self.rot6d_idxs].copy()
 
-    def _setup_env(self):
-        # Create static table
-        table_body = self.space.static_body
-        table_shape = pymunk.Segment(table_body, (0, self.BASE_Y), (self.WIDTH, self.BASE_Y), self.TABLE_RADIUS)
-        table_shape.color = pygame.Color(*self.TABLE_COLOR)
-        table_shape.friction = 1.0
-        self.space.add(table_shape)
-
-        # Create base of arm, a bit higher than the table similar to LeRobot
-        elevation_offset = self.ARM_LENGTH  # from LeRobot image (estimate)
-        arm1_position, arm1_vector = pymunk.Vec2d(self.BASE_X, self.BASE_Y - elevation_offset), pymunk.Vec2d(self.ARM_LENGTH, 0)
-        arm1_body = self.space.static_body
-        # order is important, segments must be created before joints
-        self._make_segment(arm1_position, arm1_vector, radius=self.ARM_RADIUS + 2, color=self.ARM1_COLOR)
-        self._make_pivot_joint(arm1_body, self.links[-1], arm1_position)
-        self._make_simple_motor(arm1_body, self.links[-1], 0.0)
-        # self._limit_joint(arm1_body, self.links[-1], -1.0, 1.0)
-
-        # Create second arm
-        arm2_vector = pymunk.Vec2d(self.ARM_LENGTH, 0)
-        self._make_segment(arm1_position + arm2_vector, arm2_vector, radius=self.ARM_RADIUS, color=self.ARM2_COLOR)
-        self._make_pivot_joint(self.links[-2], self.links[-1], arm2_vector, (0, 0))
-        self._make_simple_motor(self.links[-2], self.links[-1], 0.0)
-        # self._limit_joint(self.links[-2], self.links[-1], -1.0, 1.0)
-
-        # Create third arm
-        third_arm_length = self.ARM_LENGTH // 2  # from LeRobot image (estimate)
-        arm3_vector = pymunk.Vec2d(third_arm_length, 0)
-        self._make_segment(arm1_position + arm2_vector + arm3_vector, arm3_vector, radius=self.ARM_RADIUS - 2, color=self.ARM3_COLOR)
-        self._make_pivot_joint(self.links[-2], self.links[-1], 2 * arm3_vector, arm3_vector)
-        self._make_simple_motor(self.links[-2], self.links[-1], 0.0)
-        # self._limit_joint(self.links[-2], self.links[-1], -1.0, 1.0)
-
-    def _move_to_start_position(self, render):
-        frames = []
-        counter = 0
-        while True:
-            self.space.step(self.dt)
-            # if render:
-            #     self.render()
-            values, is_stop_motors = self.controller.do_angles(self.init_angles,
-                                                               [l.angle for l in self.links],
-                                                               [l.angular_velocity for l in self.links])
-            for i, motor in enumerate(self.motors):
-                motor.rate = values[i]
-
-            if is_stop_motors:
-                for motor in self.motors:
-                    motor.rate = 0.0
-                break
-
-        #     if counter % 2 == 0:
-        #         frame_surface = self.screen.copy()
-        #         frames.append(np.array(pygame.surfarray.pixels3d(frame_surface)).transpose(1, 0, 2))
-        #     counter += 1
-        #
-        # import imageio
-        #
-        # print("Saving GIF...")
-        # imageio.mimsave("robot_arm_demo.gif", frames, fps=self.FPS // 2)
-        # print("GIF saved!")
+        # Velocity (6 dims)
+        # data.cvel returns 6D spatial velocity: [Angular(3), Linear(3)]
+        spatial_vel = self.data.cvel[body_id]
+        return np.concatenate([rel_pos, rot6d, spatial_vel])
 
     def _get_obs(self):
         """
-        :return: numpy array and dict of raw angles
-        Observation is arranged like this:
-        end_pos[0], end_pos[1],
-        cos(theta1), sin(theta1), cos(theta2), sin(theta2), cos(theta3), sin(theta3),
-        angular velocities for each joint; theta1, theta2, theta3
+        :return: Unnormalized qpos and qvel, must be normalized outside the environment
         """
-        n_links = len(self.links)
-        angles = np.zeros((n_links * 2,), dtype=np.float32)
-        angular_velocities = np.zeros((n_links,), dtype=np.float32)
-        arm_raw_angles = np.zeros((n_links,), dtype=np.float32)
-        for i, link in enumerate(self.links):
-            angles[2 * i] = np.cos(link.angle)
-            angles[2 * i + 1] = np.sin(link.angle)
-            angular_velocities[i] = link.angular_velocity
-            arm_raw_angles[i] = link.angle
+        qpos = self.data.qpos[:6]
+        qvel = self.data.qvel[:6]
+        # Tip of the jaw position
+        ee_pos_world = self.data.site("gripperframe").xpos
+        ee_pos_rel = ee_pos_world - self.base_pos_world
 
-        # End effector position
-        end_pos = self.links[2].position + pymunk.Vec2d(0, 0).rotated(self.links[2].angle)
-        # where the base arm point is located
-        # then normalize
-        end_pos = (end_pos - pymunk.Vec2d(self.BASE_X, self.BASE_Y - self.ARM_LENGTH)) / self.ARM_LENGTH
-        end_pos = np.array([end_pos.x, -end_pos.y], dtype=np.float32)
-        obs = np.concatenate([end_pos, angles, angular_velocities])
+        robot_state = np.concatenate([qpos, qvel, ee_pos_rel])
 
-        motor_rates = np.zeros((n_links,), dtype=np.float32)
-        motor_forces = np.zeros((n_links,), dtype=np.float32)
-        for i, motor in enumerate(self.motors):
-            motor_rates[i] = motor.rate
-            motor_forces[i] = motor.impulse / self.dt  # accrd to documentation divide impulse by dt to get force
+        cube_a_state = self._get_cube_data(self.cube_a_id)
+        cube_b_state = self._get_cube_data(self.cube_b_id)
 
-        info = {"arm_raw_angles": arm_raw_angles, "arm_raw_velocities": angular_velocities, "motor_rates": motor_rates, "motor_forces": motor_forces}
-        return obs, info
+        extra_state = np.array([])
+        if self.task == "reach":
+            target_pos_rel = self.target_pos - self.base_pos_world
+            extra_state = target_pos_rel
 
-    def reset(self, render=False):
-        # Decided to destroy object instead of resetting
-        for body in self.space.bodies:
-            self.space.remove(body)
-        for shape in self.space.shapes:
-            self.space.remove(shape)
-        for constraint in self.space.constraints:
-            self.space.remove(constraint)
+        obs = np.concatenate([robot_state, cube_a_state, cube_b_state, extra_state]).astype(self.observation_space.dtype)
+        return obs
 
-        self.links = []
-        self.joints = []
-        self.motors = []
-
-        self._setup_env()
-        self._move_to_start_position(render)
-
-        return self._get_obs()
-
-    def step(self, action, task_name: str = None):
+    def _sample_target(self):
         """
-        :param action: list or numpy between -1 and 1
-        # TODO: maybe move to init of env
-        :param task_name: change reward based on the task
-        :return:
+        Generates a random target position using spherical coordinates.
+        Adjust the limits based on the SO-101 dimensions.
         """
-        # Process the event queue to keep the window responsive
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.close()
-                sys.exit()
+        # 1. Define Limits (SO-101 Specifics)
+        # Rho (Radius): Min to avoid hitting self, Max to stay within reach
+        min_rho, max_rho = 0.15, 0.35
 
-        # TODO: Rescale action and also get the action data again
-        if isinstance(action, list):
-            action = np.array(action)
-        # action = np.clip(action, -1.0, 1.0)
-        action *= 20.0
+        # Theta (Azimuth/Yaw): Left-to-Right reach
+        # 0 is forward. -pi/2 is right, pi/2 is left.
+        min_theta, max_theta = -4 * np.pi / 9, 4 * np.pi / 9
 
-        for i, motor in enumerate(self.motors):
-            motor.rate = action[i]
-        self.space.step(self.dt)
+        # Phi (Elevation/Pitch): Up-and-Down reach
+        # 0 is horizontal table level, pi/2 is straight up.
+        min_phi, max_phi = np.pi / 36, 4 * np.pi / 9
+
+        # 2. Random Sampling
+        rho = np.random.uniform(min_rho, max_rho)
+        theta = np.random.uniform(min_theta, max_theta)
+        phi = np.random.uniform(min_phi, max_phi)
+
+        # 3. Spherical to Cartesian Conversion (Z-up)
+        # x = forward (depth), y = side (width), z = up (height)
+        self.target_pos[0] = rho * np.cos(phi) * np.cos(theta)
+        self.target_pos[1] = rho * np.cos(phi) * np.sin(theta)
+        self.target_pos[2] = rho * np.sin(phi)
+
+        # Offset: Add to robot base position if base is not at (0,0,0)
+        self.target_pos += self.base_pos_world
+
+    def _compute_reward(self):
+        """
+        Calculates reward based on the current task.
+        SmolVLA/LeRobot Style: 0.5 for partial success, 1.0 for full success.
+        """
+
+        ee_pos = self.data.site("gripperframe").xpos
+
+        if self.task == "reach":
+            distance = np.linalg.norm(ee_pos - self.target_pos)
+
+            if self.reward_type == "sparse":
+                return 1.0 if distance < 0.05 else 0.0
+            elif self.reward_type == "dense":
+                return -distance
+
+        elif self.task == "pick_place":
+            pass
+            # cube_pos = self.get_body_pos("cube_a")
+            # box_pos = self.get_body_pos("box_1")
+            #
+            # # Stage 1: Grasping (Is the cube lifted off the table?)
+            # # Assume table height is 0.0
+            # is_lifted = cube_pos[2] > 0.05
+            #
+            # # Stage 2: Placing (Is cube inside the box radius?)
+            # # We ignore Z for distance check to make it easier
+            # dist_to_box = np.linalg.norm(cube_pos[:2] - box_pos[:2])
+            # is_in_box = dist_to_box < 0.08 and is_lifted
+            #
+            # reward = 0.0
+            # if is_lifted:
+            #     reward += 0.5
+            # if is_in_box:
+            #     reward += 0.5  # Total 1.0
+            #
+            # return reward
+
+        return 0.0
+
+    def step(self, action: np.ndarray):
+        if self.control_mode == 0:
+            scale = np.pi / 100.0
+            current_arm_ctrl = self.data.ctrl[:5].copy()
+            target_arm_ctrl = current_arm_ctrl + (action[:5] * scale)
+
+            target_arm_ctrl = np.clip(target_arm_ctrl, self.joint_min[:5], self.joint_max[:5])
+
+            self.data.ctrl[:5] = target_arm_ctrl
+
+            if self.task == "reach":
+                self.data.ctrl[-1] = self.joint_min[-1] # permanently closed
+            else:
+                gripper_action = action[5]
+                if gripper_action > 0:
+                    self.data.ctrl[5] = self.joint_max[5]  # Open
+                else:
+                    self.data.ctrl[5] = self.joint_min[5]  # Closed
+
+
+
+
+        for _ in range(self.FRAME_SKIP):
+            mujoco.mj_step(self.model, self.data)
         self.timesteps += 1
-
-        # TODO: fix depending on task change reward
-
-        reward = self._get_reward(task_name)
 
         terminated = False
         truncated = bool(self.timesteps >= self.MAX_TIMESTEPS)
-        obs, info = self._get_obs()
 
-        return obs, reward, terminated, truncated, info
+        reward = self._compute_reward()
 
-    def _get_reward(self, task_name):
-        # End effector position
-        end_pos = self.links[2].position + pymunk.Vec2d(0, 0).rotated(self.links[2].angle)
-        # where the base arm point is located
-        # then normalize
-        end_pos = (end_pos - pymunk.Vec2d(self.BASE_X, self.BASE_Y - self.ARM_LENGTH)) / self.ARM_LENGTH
-        end_pos = np.array([end_pos.x, -end_pos.y], dtype=np.float32)
+        return self._get_obs(), reward, terminated, truncated, self._get_info()
 
-        reward = 0.0
-        # "reach_center", "reach_top", "reach_right_top", "reach_left_top", "reach_bottom"
-        if task_name == "reach_center":
-            reward = -np.linalg.norm(np.array([0.0, 0.0]) - end_pos)
-        elif task_name == "reach_top":
-            reward = -np.linalg.norm(np.array([0.0, 2.2]) - end_pos)
-        elif task_name == "reach_right_top":
-            reward = -np.linalg.norm(np.array([1.5, 1.8]) - end_pos)
-        elif task_name == "reach_left_top":
-            reward = -np.linalg.norm(np.array([-1.5, 1.8]) - end_pos)
-        elif task_name == "reach_bottom":
-            reward = -np.linalg.norm(np.array([0.0, -0.5]) - end_pos)
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
 
-        reward /= 2.5
-        return reward
+        mujoco.mj_resetData(self.model, self.data)
 
-    def sample_action(self):
-        return np.random.uniform(low=-1.0, high=1.0, size=(3,))
+        n_joints = len(self.joint_names)
+        self.data.qpos[:n_joints] = self._arm_start_pos
+        self.data.qvel[:n_joints] = 0.0  # no arm movement
 
-    def _draw_joint_markers(self):
-        """Draw small circles at joint positions for visual clarity"""
-        joint_radius = 8
-        # Base joint
-        base_pos = (self.BASE_X, self.BASE_Y - self.ARM_LENGTH)
-        pygame.draw.circle(self.screen, self.JOINT_COLOR,
-                           (int(base_pos[0]), int(base_pos[1])), joint_radius)
+        # Set the actuators to the same position as well
+        self.data.ctrl[:6] = self.data.qpos[:6].copy()
 
-        # Joint between arm 1 and 2
-        if len(self.links) >= 2:
-            joint_pos = self.links[0].position + pymunk.Vec2d(self.ARM_LENGTH, 0).rotated(self.links[0].angle)
-            pygame.draw.circle(self.screen, self.JOINT_COLOR,
-                               (int(joint_pos.x), int(joint_pos.y)), joint_radius)
+        # Choose cube start position
+        chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
+        pos_a = self.cube_start_positions[chosen_indices[0]]
+        pos_b = self.cube_start_positions[chosen_indices[1]]
 
-        # Joint between arm 2 and 3
-        if len(self.links) >= 3:
-            joint_pos = self.links[1].position + pymunk.Vec2d(self.ARM_LENGTH, 0).rotated(self.links[1].angle)
-            pygame.draw.circle(self.screen, self.JOINT_COLOR,
-                               (int(joint_pos.x), int(joint_pos.y)), joint_radius)
+        # Set Cube A
+        cube_a_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_a_joint")
+        adr_a = self.model.jnt_qposadr[cube_a_id]
+        self.data.qpos[adr_a: adr_a + 3] = pos_a
+        # Set Orientation [w, x, y, z] - Identity Quaternion (No rotation)
+        # self.data.qpos[adr_a + 3: adr_a + 7] = [1, 0, 0, 0]
+        # Randomize Orientation
+        theta = np.random.uniform(-np.pi, np.pi)
+        self.data.qpos[adr_a + 3: adr_a + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
 
-        # End effector (tip of arm 3)
-        if len(self.links) >= 3:
-            end_pos = self.links[2].position + pymunk.Vec2d(0, 0).rotated(self.links[2].angle)
-            pygame.draw.circle(self.screen, (255, 255, 255),
-                               (int(end_pos.x), int(end_pos.y)), 6)
+        # Set Cube B2
+        cube_b_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_b_joint")
+        adr_b = self.model.jnt_qposadr[cube_b_id]
+        self.data.qpos[adr_b: adr_b + 3] = pos_b
+        # self.data.qpos[adr_b + 3: adr_b + 7] = [1, 0, 0, 0]
+        theta = np.random.uniform(-np.pi, np.pi)
+        self.data.qpos[adr_b + 3: adr_b + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
 
-    def render(self, render_fps=True):
-        """Draws the current state of the environment on the screen."""
-        self.screen.fill(pygame.Color(*self.BG_COLOR))
-        self.space.debug_draw(self.draw_options)
-        self._draw_joint_markers()
+        # Update Kinematics
+        mujoco.mj_forward(self.model, self.data)
 
-        pygame.draw.circle(self.screen, self.TARGET_COLOR,
-                           (int(self.target_pos_world[0]), int(self.target_pos_world[1])), 5)
+        # Settle Physics
+        for _ in range(10):
+            mujoco.mj_step(self.model, self.data)
 
-        # Display fps
-        # TODO: Set to False if using pixels as input
-        if render_fps:
-            font = pygame.font.Font(None, 24)
-            info_text = font.render(f"FPS: {int(self.clock.get_fps())}", True, self.TEXT_COLOR)
-            self.screen.blit(info_text, (10, 10))
+        self.cube_a_id = self.model.body("cube_a").id
+        self.cube_b_id = self.model.body("cube_b").id
 
-        self.clock.tick(self.FPS)
+        self.base_pos_world = self.data.body("base").xpos
 
-        pygame.display.flip()
+        self._sample_target()
+        self.timesteps = 0
+        return self._get_obs(), self._get_info()
+
+    def render(self):
+        if self.render_mode == "human":
+            # 1. Launch Viewer if it doesn't exist yet
+            if self.viewer is None:
+                self.viewer = mujoco.viewer.launch_passive(
+                    self.model, self.data, show_left_ui=False, show_right_ui=False)
+
+            if self.viewer.is_running():
+                self.viewer.user_scn.ngeom = 1
+                mujoco.mjv_initGeom(
+                    self.viewer.user_scn.geoms[0],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.02, 0, 0],  # Radius 2cm
+                    pos=self.target_pos,  # <--- Use the class variable
+                    mat=np.eye(3).flatten(),
+                    rgba=[1, 0, 0, 0.5]  # Red, semi-transparent ghost
+                )
+
+                self.viewer.sync()
+
+    def _get_info(self):
+        """
+        TODO: Not tested for now
+        Returns dictionary with 'physics' key containing full qpos/qvel state.
+        This allows the FB algorithm to reset the sim to this exact moment.
+        """
+        # Concatenate full qpos and qvel (flattens them into 1D array)
+        physics_state = np.concatenate([self.data.qpos.flat, self.data.qvel.flat])
+        return {"physics": physics_state}
+
+    def set_physics_state(self, state_vector):
+        """
+        TODO: Not tested for now
+        Sets the MuJoCo simulation state from a flattened qpos+qvel vector.
+        Used by FB algorithms to reset context for reward inference.
+        """
+        # 1. Determine split point
+        nq = self.model.nq  # Number of position coordinates
+        nv = self.model.nv  # Number of velocity coordinates
+
+        # 2. Split the vector
+        new_qpos = state_vector[:nq]
+        new_qvel = state_vector[nq: nq + nv]
+
+        # 3. Write to MuJoCo data
+        self.data.qpos[:] = new_qpos
+        self.data.qvel[:] = new_qvel
+
+        # 4. Forward propagate to update kinematics (xpos, xquat, etc.)
+        mujoco.mj_forward(self.model, self.data)
 
     def close(self):
-        """Cleans up the Pygame window."""
-        pygame.quit()
-
+        if self.viewer is not None:
+            self.viewer.close()
 
 if __name__ == "__main__":
-    env = RobotArmEnv(True)
-
+    env = RobotArmEnv(render_mode="human")
+    obs, info = env.reset(seed=0)
     done = False
-    observation, info = env.reset(render=False)
-
-    # Follow mouse
-    target_pos_world = np.array([400, 300])
-    target_pos_relative = (target_pos_world - np.array([env.BASE_X, env.BASE_Y - env.ARM_LENGTH])) / env.ARM_LENGTH
-    target_pos_relative[1] = -target_pos_relative[1]
-
-    target_angles_theoretical = env.controller.position_to_angles(
-        target_pos_relative[0],
-        target_pos_relative[1],
-        [1.0, 1.0, 0.5],
-        info["arm_raw_angles"]
-    )
-    target_angles = theoretical2simulation_angles(target_angles_theoretical)
-
-    print(target_pos_relative)
-    print(info["arm_raw_angles"])
-    print(target_angles)
-    target_angles_ = []
-    for curr_angle, target_angle in zip(info["arm_raw_angles"], target_angles):
-        if abs(target_angle - curr_angle) > np.pi:
-            target_angles_.append(simp_angle(target_angle))
-        else:
-            target_angles_.append(target_angle)
-    target_angles = np.array(target_angles_)
-    print(target_angles)
-    env.target_pos_world = target_pos_world
-
     while not done:
-        # action = env.sample_action()
-        action = np.array([0.0,0.0,0.0])
-
-        values, is_stop_motors = env.controller.do_angles(target_angles, info["arm_raw_angles"], info["arm_raw_velocities"])
-
-        if not is_stop_motors:
-            action = values
-
-        observation_, reward, terminated, truncated, info = env.step(action)
+        action = np.zeros(env.action_space.shape[0])
+        obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
-
         env.render()
     env.close()

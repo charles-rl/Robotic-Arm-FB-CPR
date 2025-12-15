@@ -1,0 +1,72 @@
+<mujoco>
+    <asset>
+        <!-- Colors for visual distinction -->
+        <material name="mat_box_1" rgba="0.93 0.93 0.93 1"/> <!-- Grey Box -->
+        <material name="mat_box_2" rgba="0.93 0.93 0.93 1"/> <!-- Grey Box -->
+        <material name="mat_cube_a" rgba="1 0 0 1"/>     <!-- Red Cube -->
+        <material name="mat_cube_b" rgba="0 0 1 1"/>     <!-- Blue Cube -->
+    </asset>
+
+    <worldbody>
+        <!-- ============================================== -->
+        <!-- CONTAINER 1 (The "Right" Box) -->
+        <!-- Constructed of 5 thin walls. -->
+        <!-- Center Position: x=0.3, y=-0.2 -->
+        <!-- ============================================== -->
+        <body name="container_1" pos="-0.4 -0.2 0.4">
+            <!-- Floor of the box -->
+            <geom type="box" size="0.04 0.04 0.002" pos="0 0 0.002" material="mat_box_1" friction="1 0.005 0.0001"/>
+
+            <!-- Walls (size logic: length, thickness, height) -->
+            <!-- Front Wall -->
+            <geom type="box" size="0.04 0.002 0.04" pos="0 -0.042 0.042" material="mat_box_1"/>
+            <!-- Back Wall -->
+            <geom type="box" size="0.04 0.002 0.04" pos="0 0.042 0.042" material="mat_box_1"/>
+            <!-- Left Wall -->
+            <geom type="box" size="0.002 0.04 0.04" pos="-0.042 0 0.042" material="mat_box_1"/>
+            <!-- Right Wall -->
+            <geom type="box" size="0.002 0.04 0.04" pos="0.042 0 0.042" material="mat_box_1"/>
+        </body>
+
+        <!-- ============================================== -->
+        <!-- CONTAINER 2 (The "Left" Box) -->
+        <!-- Center Position: x=0.0, y=0.2 -->
+        <!-- ============================================== -->
+        <body name="container_2" pos="-0.4 0.2 0.4">
+            <!-- Floor -->
+            <geom type="box" size="0.04 0.04 0.002" pos="0 0 0.002" material="mat_box_2" friction="1 0.005 0.0001"/>
+            <!-- Walls -->
+            <geom type="box" size="0.04 0.002 0.04" pos="0 -0.042 0.042" material="mat_box_2"/>
+            <geom type="box" size="0.04 0.002 0.04" pos="0 0.042 0.042" material="mat_box_2"/>
+            <geom type="box" size="0.002 0.04 0.04" pos="-0.042 0 0.042" material="mat_box_2"/>
+            <geom type="box" size="0.002 0.04 0.04" pos="0.042 0 0.042" material="mat_box_2"/>
+        </body>
+
+        <!-- ============================================== -->
+        <!-- CUBE A (Red) -->
+        <!-- Needs a freejoint to be movable -->
+        <!-- ============================================== -->
+        <body name="cube_a" pos="-0.1 0 0.45">
+            <joint name="cube_a_joint" type="free" damping="0.001"/>
+            <geom size="0.02 0.02 0.02" type="box" condim="3" name="cube_a" material="mat_cube_a" mass="0.01"/>
+            <site name="cube_a" pos="0 0 0" size="0.02 0.02 0.02" rgba="0 1 0 1" type="sphere"/>
+		</body>
+
+        <!-- ============================================== -->
+        <!-- CUBE B (Blue) -->
+        <!-- ============================================== -->
+        <body name="cube_b" pos="-0.25 0 0.45">
+            <joint name="cube_b_joint" type="free" damping="0.001"/>
+            <geom size="0.02 0.02 0.02" type="box" condim="3" name="cube_b" material="mat_cube_b" mass="0.01"/>
+            <site name="cube_b" pos="0 0 0" size="0.02 0.02 0.02" rgba="0 1 0 1" type="sphere"/>
+		</body>
+
+<!--        <body name="cube_b" pos="-0.25 0 0.45">-->
+<!--            <joint name="cube_b:joint" type="free" frictionloss="0.01"/>-->
+<!--            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002"/>-->
+<!--            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.01 0.01 0.01" type="box" name="cube_b" material="mat_cube_b"/>-->
+<!--            <site name="cube_b" pos="0 0 0" size="0.01 0.01 0.01" rgba="0 1 0 1" type="sphere"/>-->
+<!--		</body>-->
+
+    </worldbody>
+</mujoco>
