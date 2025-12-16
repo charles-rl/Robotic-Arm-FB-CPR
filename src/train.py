@@ -96,15 +96,15 @@ def visualize_agent():
 
     # 2. Load Normalization Stats
     # We must normalize the test inputs exactly how we normalized training inputs
-    env = VecNormalize.load("./models/vec_normalize.pkl", env)
+    env = VecNormalize.load("../models/vec_normalize.pkl", env)
     env.training = False  # Disable updating stats during test
     env.norm_reward = False
 
     # 3. Load Model
-    model = SAC.load("./models/sac_so101_reach")
+    model = SAC.load("../models/sac_so101_reach")
 
     obs = env.reset()
-    for i in range(1000):
+    for i in range(2000):
         # Predict action
         action, _states = model.predict(obs, deterministic=True)
 
@@ -114,7 +114,6 @@ def visualize_agent():
         env.render()
 
         if dones[0]:
-            print("Target Reached or Timeout!")
             obs = env.reset()
 
 
