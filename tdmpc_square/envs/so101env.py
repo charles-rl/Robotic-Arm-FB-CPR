@@ -69,7 +69,9 @@ class RobotArmEnv(gymnasium.Env):
             sparse
             dense
         """
-        self.model = mujoco.MjModel.from_xml_path(r"C:\Users\Charles\Documents\Python Scripts\Work\Robotic-Arm-FB-CPR\simulation\scene.xml")
+        import os
+        print(os.listdir("../../.."))
+        self.model = mujoco.MjModel.from_xml_path("../../../simulation/scene.xml")
         self.data = mujoco.MjData(self.model)
         self.viewer = None
         self.task = task

@@ -69,7 +69,8 @@ class RobotArmEnv(gymnasium.Env):
             sparse
             dense
         """
-        self.model = mujoco.MjModel.from_xml_path(r"C:\Users\Charles\Documents\Python Scripts\Work\Robotic-Arm-FB-CPR\simulation\scene.xml")
+        self.renderer = None
+        self.model = mujoco.MjModel.from_xml_path(r"..\simulation\scene.xml")
         self.data = mujoco.MjData(self.model)
         self.viewer = None
         self.task = task
@@ -328,6 +329,26 @@ class RobotArmEnv(gymnasium.Env):
                 )
 
                 self.viewer.sync()
+        elif self.render_mode == "rgb_array":
+            if self.renderer is None:
+                self.renderer = mujoco.Renderer(self.model, height=480, width=640)
+                # Hack: Renderer constructor doesn't store cam_id permanently in some versions,
+                # so we update the scene with the specific camera
+                self.renderer.update_scene(self.data, camera="main_cam")
+            else:
+                self.renderer.update_scene(self.data, camera="main_cam")
+
+            # Add the red target sphere to the renderer scene
+            self.renderer.scene.ngeom += 1
+            mujoco.mjv_initGeom(
+                self.renderer.scene.geoms[self.renderer.scene.ngeom - 1],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.02, 0, 0],
+                pos=self.target_pos,
+                mat=np.eye(3).flatten(),
+                rgba=[1, 0, 0, 1]
+            )
+            return self.renderer.render()
 
     def _get_info(self):
         """

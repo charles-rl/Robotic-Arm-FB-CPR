@@ -46,6 +46,7 @@ def train(cfg: dict):
     ```
     """
     # assert torch.cuda.is_available()
+    # TODO: Save agent if you are going to use TD MPC in the future
     assert cfg.steps > 0, "Must train for at least 1 step."
     cfg = parse_cfg(cfg)
     set_seed(cfg.seed)

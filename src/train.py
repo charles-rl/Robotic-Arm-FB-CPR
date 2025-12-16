@@ -1,13 +1,46 @@
 from stable_baselines3 import SAC
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.callbacks import BaseCallback
 import wandb
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.monitor import Monitor
 
 from environment import RobotArmEnv
 
-DEBUG = False
+DEBUG = True
+
+
+class RawRewardCallback(BaseCallback):
+    """
+    Logs the raw cumulative reward of every finished episode to WandB.
+    This avoids the smoothing of 'ep_rew_mean'.
+    """
+
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        # SB3 Vectorized Envs return a list of 'infos' dictionaries
+        # When an episode ends, the 'Monitor' wrapper adds an 'episode' key
+        for info in self.locals['infos']:
+            if 'episode' in info:
+                # Extract the exact reward sum 'r' and length 'l'
+                raw_reward = info['episode']['r']
+                episode_len = info['episode']['l']
+                r = raw_reward
+                t = self.num_timesteps
+                l = episode_len
+
+                # Log to WandB immediately
+                # We use self.num_timesteps so the X-axis aligns perfectly
+                wandb.log({
+                    "rollout/raw_episode_reward": raw_reward,
+                    "rollout/raw_episode_length": episode_len
+                }, step=self.num_timesteps)
+
+        return True
 
 
 def test_environment_structure():
@@ -68,15 +101,26 @@ def train_agent():
         tensorboard_log=f"runs/{run.id}"  # <--- Point this to a local folder
     )
 
+    # 1. Instantiate the callbacks
+    raw_reward_callback = RawRewardCallback()
+
+    # (Optional) Keep your other callbacks
+    wandb_callback = WandbCallback(gradient_save_freq=100, verbose=2)
+    checkpoint_callback = CheckpointCallback(save_freq=10000, save_path=f"./models/{run.id}")
+
+    # 2. Group them
+    callback_group = CallbackList([
+        raw_reward_callback,
+        wandb_callback,
+        checkpoint_callback
+    ])
+
     print("--- 3. Starting Training ---")
     model.learn(
         total_timesteps=total_timesteps,
         progress_bar=True,
         log_interval=log_interval,
-        callback=WandbCallback(
-            gradient_save_freq=100,  # Logs gradients every 100 steps
-            verbose=2
-        )
+        callback=callback_group,
     )
 
     # 4. Save locally and Finish
