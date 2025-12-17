@@ -33,8 +33,9 @@ class RawRewardCallback(BaseCallback):
             if 'episode' in info:
                 wandb.log({
                     "rollout/raw_episode_reward": info['episode']['r'],
-                    "rollout/raw_episode_length": info['episode']['l']
-                }, step=self.num_timesteps)
+                    "rollout/raw_episode_length": info['episode']['l'],
+                    "env_steps": self.num_timesteps
+                })
         return True
 
 
@@ -138,10 +139,10 @@ def train_agent():
 
     # 3. Create Evaluation/Video Env (With Render)
     # We wrap this in VecNormalize too so it understands the normalized inputs
-    eval_env = DummyVecEnv([lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK)])
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    # eval_env = DummyVecEnv([lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK)])
+    # eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
     # We turn off training on this one, stats will be synced in the callback
-    eval_env.training = False
+    # eval_env.training = False
 
     # 4. Define Algorithm
     model = SAC(
@@ -158,14 +159,14 @@ def train_agent():
     )
 
     # 5. Callbacks
-    video_callback = VideoRecorderCallback(eval_env, render_freq=video_freq)
+    # video_callback = VideoRecorderCallback(eval_env, render_freq=video_freq)
     raw_reward_callback = RawRewardCallback()
     wandb_callback = WandbCallback(gradient_save_freq=100, verbose=2)
     checkpoint_callback = CheckpointCallback(save_freq=20000, save_path=f"./models/{run.id}")
 
     callback_group = CallbackList([
         raw_reward_callback,
-        video_callback,
+        # video_callback,
         wandb_callback,
         checkpoint_callback
     ])
@@ -185,7 +186,7 @@ def train_agent():
 
     run.finish()
     env.close()
-    eval_env.close()
+    # eval_env.close()
 
 
 def evaluate(episodes=3):

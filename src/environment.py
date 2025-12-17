@@ -112,6 +112,7 @@ class RobotArmEnv(gymnasium.Env):
         self.dynamic_goal_pos = np.zeros(3)
         self.object_focus_one_hot = np.zeros(2)
         self.object_focus_idx = None
+        self.object_start_height = None
         control_modes = ("delta_joint_position", "delta_end_effector")
         self.control_mode = control_modes.index(control_mode)
         self.render_mode = render_mode
@@ -278,38 +279,41 @@ class RobotArmEnv(gymnasium.Env):
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos = self.data.xpos[target_cube_id].copy()
 
-            # 1. Reward for Pinching (Grasping)
-            # Check if both sensors are active
-            # Skip this for now because I'm not sure if the sensor gives an accurate reading
-            # left_contact = self.data.sensordata[self.left_jaw_sensor_id] > 0.5
-            # right_contact = self.data.sensordata[self.right_jaw_sensor_id] > 0.5
-
-            # Check distance to ensure we are grasping the RIGHT object
+            # 1. Grasp Check
             dist_ee_cube = np.linalg.norm(ee_pos - cube_pos)
             has_grasp = dist_ee_cube < 0.05
 
-            # Goal Z is in dynamic_goal_pos[2]
-            # We consider it lifted if it's close to that height
-            dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
-            is_lifted = dist_z < 0.05  # Within 5cm of target height
+            dist_from_table = cube_pos[2] - self.object_start_height
+            is_lifted = dist_from_table > 0.05
 
-            reward = 0.0
+            dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
+            is_goal = dist_z < 0.05
 
             if self.reward_type == "sparse":
+                reward = 0.0
                 if has_grasp: reward += 0.5
                 if has_grasp and is_lifted: reward += 0.5
+                if has_grasp and is_lifted and is_goal: reward += 0.5
                 return reward
+
             elif self.reward_type == "dense":
-                reach_reward = 1 - np.tanh(5.0 * dist_ee_cube)
-                lift_dist = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                lift_reward = 1 - np.tanh(5.0 * lift_dist)
+                # Component 1: Reach (Max 1.0)
+                # We prioritize the grasp. If we have the grasp, we assume reach is maxed.
+                reach_reward = 1.0 - np.tanh(5.0 * dist_ee_cube)
 
                 if has_grasp:
-                    return 1.0 + lift_reward
-                else:
-                    return reach_reward
+                    if not is_goal:
+                        hoist_reward = np.tanh(20.0 * dist_from_table)
+                    else:
+                        hoist_reward = 1.0
 
-            return reward
+                    dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                    precision_reward = 1 - np.tanh(5.0 * dist_to_goal)
+
+                    return 1.0 + hoist_reward + precision_reward
+                else:
+                    # If we don't have the cube, only reward reaching for it
+                    return reach_reward
 
         return 0.0
 
@@ -389,6 +393,10 @@ class RobotArmEnv(gymnasium.Env):
         self.object_focus_idx = np.random.randint(0, 2)
         self.object_focus_one_hot = np.zeros(2)
         self.object_focus_one_hot[self.object_focus_idx] = 1.0
+
+        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+        target_cube_pos = self.data.xpos[target_cube_id].copy()
+        self.object_start_height = target_cube_pos[2]
 
         self._sample_target()
         self.timesteps = 0
