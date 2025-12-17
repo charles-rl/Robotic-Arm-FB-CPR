@@ -34,8 +34,8 @@ class Args:
     env_id: str = "SO101-Reach-v0"
     total_timesteps: int = 2000000  # 1M steps
     learning_rate: float = 3e-4
-    num_envs: int = 50
-    num_steps: int = 1000  # Steps per env per update
+    num_envs: int = 20
+    num_steps: int = 50  # Steps per env per update
     anneal_lr: bool = True
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -123,21 +123,21 @@ class Agent(nn.Module):
 
         # Critic (Shared backbone for Intrinsic and Extrinsic)
         self.critic_body = nn.Sequential(
-            layer_init(nn.Linear(obs_dim, 64)),
+            layer_init(nn.Linear(obs_dim, 448)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(448, 448)),
             nn.Tanh(),
         )
-        self.critic_ext = layer_init(nn.Linear(64, 1), std=1.0)
-        self.critic_int = layer_init(nn.Linear(64, 1), std=1.0)
+        self.critic_ext = layer_init(nn.Linear(448, 1), std=1.0)
+        self.critic_int = layer_init(nn.Linear(448, 1), std=1.0)
 
         # Actor
         self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(obs_dim, 64)),
+            layer_init(nn.Linear(obs_dim, 448)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(448, 448)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, act_dim), std=0.01),
+            layer_init(nn.Linear(448, act_dim), std=0.01),
         )
         self.actor_logstd = nn.Parameter(torch.zeros(1, act_dim))
 
@@ -171,20 +171,20 @@ class RNDModel(nn.Module):
 
         # Predictor Network (Trainable)
         self.predictor = nn.Sequential(
-            layer_init(nn.Linear(input_size, 256)),
+            layer_init(nn.Linear(input_size, 512)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, 256)),
+            layer_init(nn.Linear(512, 512)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, 256)),  # Feature output
+            layer_init(nn.Linear(512, 256)),  # Feature output
         )
 
         # Target Network (Fixed, Randomly Initialized)
         self.target = nn.Sequential(
-            layer_init(nn.Linear(input_size, 256)),
+            layer_init(nn.Linear(input_size, 512)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, 256)),
+            layer_init(nn.Linear(512, 512)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, 256)),
+            layer_init(nn.Linear(512, 256)),
         )
 
         # Freeze target
@@ -476,7 +476,7 @@ if __name__ == "__main__":
                 break
 
         # Log
-        if update % 2 == 0:
+        if update % 10 == 0:
             torch.save(agent.state_dict(), f"runs/{run_name}/latest_model.pt")
 
             # 2. Overwrite Normalization Stats

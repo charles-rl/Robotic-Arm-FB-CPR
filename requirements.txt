@@ -8,3 +8,4 @@ tensordict
 torchrl
 stable-baselines3
 mujoco
+imageio[ffmpeg]

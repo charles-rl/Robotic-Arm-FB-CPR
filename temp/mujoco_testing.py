@@ -331,7 +331,7 @@ def action_joints_open_space():
 
             # D. VISUALIZATION (Draw the Dot)
             # We use the user_scn (User Scene) to add geometric primitives
-            viewer.user_scn.ngeom = 1
+            viewer.user_scn.ngeom = 4
             mujoco.mjv_initGeom(
                 viewer.user_scn.geoms[0],
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -340,6 +340,50 @@ def action_joints_open_space():
                 mat=np.eye(3).flatten(),  # Identity matrix for orientation
                 rgba=[1, 0, 0, 1]  # Red color, opaque
             )
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[3],
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[0.01, 0.02, 0.05],  # Radius 0.02
+                pos=data.site("gripperframe").xpos,  # Position at our target
+                mat=data.site("gripperframe").xmat,  # Identity matrix for orientation
+                rgba=[1, 0, 0, 1]  # Red color, opaque
+            )
+            left_sensor_pos = data.site("left_pad_site").xpos
+            left_sensor_mat = data.site("left_pad_site").xmat
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[1],
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[0.003, 0.005, 0.028],  # Radius 0.02
+                pos=left_sensor_pos,  # Position at our target
+                mat=left_sensor_mat,  # Identity matrix for orientation
+                rgba=[0, 1, 0, 1]  # Green color, opaque
+            )
+            right_sensor_pos = data.site("right_pad_site").xpos
+            right_sensor_mat = data.site("right_pad_site").xmat
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[2],
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[0.003, 0.028, 0.005],  # Radius 0.02
+                pos=right_sensor_pos,  # Position at our target
+                mat=right_sensor_mat,  # Identity matrix for orientation
+                rgba=[0, 1, 0, 1]  # Green color, opaque
+            )
+
+            left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "left_finger_sensor")
+            right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "right_finger_sensor")
+
+            # In newer MuJoCo versions, you can access by name directly via data.sensor()
+            # But looking up ID and using sensordata is the most robust way.
+            left_force = data.sensordata[left_id]
+            right_force = data.sensordata[right_id]
+
+            # 2. Normalize (Optional but good for NN)
+            # Log-scale is often better because contact forces can spike to 100N+
+            # but we care about the difference between 0N and 1N.
+            left_norm = np.tanh(left_force / 5.0)
+            right_norm = np.tanh(right_force / 5.0)
+            if left_norm > 0.0 or right_norm > 0.0:
+                print(f"Left: {left_norm}, Right: {right_norm} \t Left: {left_force}, Right: {right_force}")
 
             # E. RENDER & SYNC
             viewer.sync()
@@ -735,4 +779,4 @@ def action_joints_manual():
         pygame.quit()
 
 if __name__ == "__main__":
-    init_simulation_test()
+    action_joints_open_space()

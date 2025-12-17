@@ -115,11 +115,11 @@ def evaluate(
 if __name__ == "__main__":
     # CHANGE THIS to the specific timestamp folder created in /runs/
     # Example: "runs/SO101-Reach-v0__train_ppo_rnd__1__1702721234"
-    RUN_FOLDER = "runs/SO101-Reach-v0__train_rnd__1__1765880385"
+    RUN_FOLDER = "runs/a"
 
     # Check if folder exists before running
     if not os.path.exists(RUN_FOLDER):
         print(f"Error: Folder {RUN_FOLDER} not found.")
         print("Please check your 'runs/' directory and paste the correct folder name in the script.")
     else:
-        evaluate(RUN_FOLDER, episodes=1, save_video=True)
+        evaluate(RUN_FOLDER, episodes=3, save_video=True)
