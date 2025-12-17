@@ -1,7 +1,7 @@
 #defaults:
 
 # environment
-task: so101-reach
+task: so101-lift
 obs: state
 
 # evaluation
@@ -12,7 +12,7 @@ eval_value: true # evaluate value function approximation
 eval_freq: 50000
 
 # training
-steps: 200_000
+steps: 300_000
 batch_size: 256
 reward_coef: 0.1
 value_coef: 0.1
@@ -69,7 +69,7 @@ dropout: 0.01
 simnorm_dim: 8
 
 # logging
-wandb_project: so101-reach-fb
+wandb_project: so101-lift-fb
 wandb_entity: null
 wandb_silent: false
 disable_wandb: false

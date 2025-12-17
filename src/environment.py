@@ -294,7 +294,7 @@ class RobotArmEnv(gymnasium.Env):
             continuous_grasp_reward = np.tanh(min_force / 5.0)
             # Discrete "Latching" Bonus:
             # If we have a solid grip (> 1N on both fingers), give a massive cookie.
-            has_solid_grip = min_force > 0.5
+            has_solid_grip = min_force > 1.0
             grasp_bonus = 2.0 if has_solid_grip else 0.0
 
             # --- 2. Lift/Goal Analysis ---

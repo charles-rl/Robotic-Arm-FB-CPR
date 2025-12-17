@@ -4,9 +4,8 @@ import mujoco
 import mujoco.viewer
 
 class RobotArmEnv(gymnasium.Env):
-    max_episode_steps = 100
     FRAME_SKIP = 17
-    def __init__(self, render_mode=None, reward_type="sparse", task="reach", control_mode="delta_joint_position"):
+    def __init__(self, render_mode=None, reward_type=None, task="base", control_mode="delta_joint_position"):
         """
         ## Robot Specification
         - **Robot:** SO-101 (Standard Open Manipulator).
@@ -15,19 +14,43 @@ class RobotArmEnv(gymnasium.Env):
         - Simulation time step: 0.002 seconds
         - Robot Control Frequency: 30 Hz (0.034 seconds, 29.41 FPS)
 
-        ## State Space (45 dims)
-        - **Robot Proprioception (15 dims):**
-            - **Joint Positions (5 dims):** Normalized to based on physical joint limits. `[-1, 1]`
+        ## FB State Space (59 dims)
+        - **Robot Proprioception (29 dims):**
+            - **Joint Positions (5 dims):**`
             - **Joint Velocities (5 dims):** For the FB representation to understand momentum and dynamics.
             - **Gripper State (2 dims):** Joint Position and Velocity.
             - **End-Effector (EE) Position (3 dims):** Cartesian coordinates relative to the base. $(x, y, z)$        ```
                 - *Note:* Most VLA models (including ACT, Diffusion Policy, and SmolVLA) include EE position in the state vector. It helps the network learn faster because it doesn't have to internally calculate Forward Kinematics (converting angles to XYZ) from scratch.
+            - **End-Effector (EE) Orientation (6 dims):** **Rotate6D** representation. Recent change.
+            - **End-Effector (EE) Velocities (6 dims):** Angular/Linear velocities. Recent change.
+            - **Continuous Contact Sensors (2 dims):** Continuous value indicating if one of the finger pads is touching anything. So one for the moving jaw and the other would be for the not moving jaw.
+                - Without this, the FB representation has to infer contact purely from the visual overlap of the Gripper XYZ and Cube XYZ, which is chemically noisy in simulation. Explicit sensors make the transition dynamics much sharper.
         - **Object States (30 dims):**
             - **Cube A & Cube B Position (3 dims each):** $(x, y, z)$
+            - **Cube A & Cube B Relative Position to End-Effector (3 dims each):** ee_pos - cube_pos
             - **Cube A & Cube B Orientation (6 dims each):** **Rotate6D** representation. This is continuous and easier for NNs to learn than Quaternions.
                 - Idea from this paper: https://arxiv.org/pdf/2510.10274
                 - **Rotate6D** reference paper: https://arxiv.org/pdf/1812.07035
-            - **Cube A & Cube B Velocities (6 dims each):** Linear/Angular velocities
+            - **Cube A & Cube B Velocities (6 dims each):** Angular/Linear velocities.
+        ## Task Specific States (8 dims)
+        - **Dynamic Goal Position (3 dims):**
+            - **Description:** The absolute coordinates of where the active object (or end-effector) should end up.
+            - **Logic per Task:**
+                - **Reach:** Random point in space (spherical sampling).
+                - **Lift:** Current_Cube_Pos + [0, 0, 0.2]. (Dynamic targets help learning).
+                - **Place:** Fixed_Box_Pos.
+                - **Stack:** Current_Bottom_Cube_Pos + [0, 0, Cube_Height].
+            - **Why:** This allows a single policy network to handle all spatial tasks. The network learns to minimize the distance between the Target Object and this Goal Vector.
+        - **Target Object Indicator (2 dims):**
+            - **Description:** A One-Hot vector indicating which object is currently relevant.
+                - `[1, 0]` = Focus on Cube A.
+                - `[0, 1]` = Focus on Cube B.
+                - `[0, 0]` = Focus on End-Effector (for Reach tasks).
+            - **Why:** Since your Base State includes both cubes, the agent needs to know which one to pick up. Without this, if you say "Place at Box 1," the agent won't know which cube to put there.
+        - **Relative Distance: Target Object -> Goal (3 dims)**
+            - **Math:** Goal_Pos - Current_Target_Object_Pos.
+            - **Why?** Just like you added EE - Cube to the Base State to help the robot find the cube, adding Cube - Box to the Task State helps the robot find the box.
+            - Without this: The network has to internally subtract Object_Pos (from dim 30) and Goal_Pos (from dim 60). It can do this, but giving it explicitly speeds up training significantly.
 
         ## Action Space
         *Design Choice: We will code the environment to support switching between Option B and C to test which yields better FB representations.*
@@ -62,16 +85,17 @@ class RobotArmEnv(gymnasium.Env):
             Option B: delta_end_effector
             Option C: delta_joint_position
         Tasks:
-            base - (45 dims) default for FB training
-            reach - for testing, reach random target position, observation dim has relative target position
-            pick - for testing, pick cube and reach target position, observation dim has relative target position
+            base - (65 dims) default for FB training (600 timesteps)
+            reach - reach random target position (100 timesteps)
+            lift - pick cube and hover (200 timesteps)
+            pick - pick cube and reach target position or box (300 timesteps)
+            stack - stack cubes on top of each other (500 timesteps)
         reward types:
             sparse
             dense
         """
-        import os
-        print(os.listdir("../../.."))
-        self.model = mujoco.MjModel.from_xml_path("../../../simulation/scene.xml")
+        self.renderer = None
+        self.model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
         self.data = mujoco.MjData(self.model)
         self.viewer = None
         self.task = task
@@ -80,9 +104,15 @@ class RobotArmEnv(gymnasium.Env):
         self.joint_names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
         self.joint_min = self.model.jnt_range[:6, 0]
         self.joint_max = self.model.jnt_range[:6, 1]
-        self.cube_a_id = None
-        self.cube_b_id = None
-        self.target_pos = np.zeros(3)
+        self.cube_a_id = self.model.body("cube_a").id
+        self.cube_b_id = self.model.body("cube_b").id
+        self.gripper_body_id = self.data.body("gripper").id
+        self.left_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "left_finger_sensor")
+        self.right_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "right_finger_sensor")
+        self.dynamic_goal_pos = np.zeros(3)
+        self.object_focus_one_hot = np.zeros(2)
+        self.object_focus_idx = None
+        self.object_start_height = None
         control_modes = ("delta_joint_position", "delta_end_effector")
         self.control_mode = control_modes.index(control_mode)
         self.render_mode = render_mode
@@ -104,24 +134,36 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, 0.10, 0.43],  # 4. Far Left
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
+        self.action_scale = np.pi / 50.0
         self.rot6d_mat = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
         self.base_pos_world = None
         self.timesteps = 0
 
-        obs_dims = 45
+        self.max_episode_steps = 600
+        obs_dims = 65
         actions_dims = 6
+        # Task specific states included
+        if self.task != "base":
+            obs_dims += 8
+
         if self.task == "reach":
-            obs_dims += 3
             actions_dims -= 1
-            self.max_episode_steps = 100  # lesser time needed
+            self.max_episode_steps = 100
+        elif self.task == "lift":
+            self.max_episode_steps = 200
+        elif self.task == "pick":
+            self.max_episode_steps = 300
+        elif self.task == "stack":
+            self.max_episode_steps = 500
 
         # 64 bit chosen for 64 bit computers
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
 
-    def _get_cube_data(self, body_id):
+    def _get_cube_data(self, body_id, ee_pos_world):
         rel_pos = self.data.xpos[body_id] - self.base_pos_world
+        ee_cube_rel = ee_pos_world - self.data.xpos[body_id]
 
         # Orientation -> Rotate6D (6 dims)
         quat = self.data.xquat[body_id]
@@ -131,7 +173,7 @@ class RobotArmEnv(gymnasium.Env):
         # Velocity (6 dims)
         # data.cvel returns 6D spatial velocity: [Angular(3), Linear(3)]
         spatial_vel = self.data.cvel[body_id]
-        return np.concatenate([rel_pos, rot6d, spatial_vel])
+        return np.concatenate([rel_pos, ee_cube_rel, rot6d, spatial_vel])
 
     def _get_obs(self):
         """
@@ -142,50 +184,80 @@ class RobotArmEnv(gymnasium.Env):
         # Tip of the jaw position
         ee_pos_world = self.data.site("gripperframe").xpos
         ee_pos_rel = ee_pos_world - self.base_pos_world
+        ee_xmat = self.data.site("gripperframe").xmat
+        ee_orientation = ee_xmat[self.rot6d_idxs].copy()
+        # Close enough to end effector
+        ee_cvel = self.data.cvel[self.gripper_body_id].copy()
 
-        robot_state = np.concatenate([qpos, qvel, ee_pos_rel])
+        left_jaw_force = self.data.sensordata[self.left_jaw_sensor_id]
+        right_jaw_force = self.data.sensordata[self.right_jaw_sensor_id]
+        left_force_norm = np.tanh(left_jaw_force / 5.0)
+        right_force_norm = np.tanh(right_jaw_force / 5.0)
+        jaw_forces = np.array([left_force_norm, right_force_norm])
 
-        cube_a_state = self._get_cube_data(self.cube_a_id)
-        cube_b_state = self._get_cube_data(self.cube_b_id)
+        robot_state = np.concatenate([qpos, qvel, ee_pos_rel, ee_orientation, ee_cvel, jaw_forces])
 
-        extra_state = np.array([])
-        if self.task == "reach":
-            target_pos_rel = self.target_pos - self.base_pos_world
-            extra_state = target_pos_rel
+        cube_a_state = self._get_cube_data(self.cube_a_id, ee_pos_world)
+        cube_b_state = self._get_cube_data(self.cube_b_id, ee_pos_world)
 
-        obs = np.concatenate([robot_state, cube_a_state, cube_b_state, extra_state]).astype(self.observation_space.dtype)
+        if self.task != "base":
+            obs = np.concatenate([robot_state, cube_a_state, cube_b_state, self._get_task_states(ee_pos_world)]).astype(self.observation_space.dtype)
+        else:
+            obs = np.concatenate([robot_state, cube_a_state, cube_b_state]).astype(self.observation_space.dtype)
         return obs
+
+    def _get_task_states(self, ee_pos_world):
+        task_specific_states = np.zeros(8)
+        if self.task == "reach":
+            dynamic_goal_rel = self.dynamic_goal_pos - self.base_pos_world
+            task_specific_states[0:3] = dynamic_goal_rel
+            # end effector relative to goal position
+            task_specific_states[5:8] = ee_pos_world - self.dynamic_goal_pos
+        elif self.task == "lift":
+            dynamic_goal_rel = self.dynamic_goal_pos - self.base_pos_world
+            task_specific_states[0:3] = dynamic_goal_rel
+            task_specific_states[3:5] = self.object_focus_one_hot
+            target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+            target_cube_pos = self.data.xpos[target_cube_id].copy()
+            obj_to_goal = self.dynamic_goal_pos - target_cube_pos
+            task_specific_states[5:8] = obj_to_goal
+        return task_specific_states
 
     def _sample_target(self):
         """
         Generates a random target position using spherical coordinates.
         Adjust the limits based on the SO-101 dimensions.
         """
-        # 1. Define Limits (SO-101 Specifics)
-        # Rho (Radius): Min to avoid hitting self, Max to stay within reach
-        min_rho, max_rho = 0.15, 0.35
+        if self.task == "reach":
+            # Rho (Radius): Min to avoid hitting self, Max to stay within reach
+            min_rho, max_rho = 0.2, 0.4
 
-        # Theta (Azimuth/Yaw): Left-to-Right reach
-        # 0 is forward. -pi/2 is right, pi/2 is left.
-        min_theta, max_theta = -4 * np.pi / 9, 4 * np.pi / 9
+            # Theta (Azimuth/Yaw): Left-to-Right reach
+            # 0 is forward. -pi/2 is right, pi/2 is left.
+            min_theta, max_theta = -4 * np.pi / 9, 4 * np.pi / 9
 
-        # Phi (Elevation/Pitch): Up-and-Down reach
-        # 0 is horizontal table level, pi/2 is straight up.
-        min_phi, max_phi = np.pi / 36, 4 * np.pi / 9
+            # Phi (Elevation/Pitch): Up-and-Down reach
+            # 0 is horizontal table level, pi/2 is straight up.
+            min_phi, max_phi = np.pi / 36, 4 * np.pi / 9
 
-        # 2. Random Sampling
-        rho = np.random.uniform(min_rho, max_rho)
-        theta = np.random.uniform(min_theta, max_theta)
-        phi = np.random.uniform(min_phi, max_phi)
+            rho = np.random.uniform(min_rho, max_rho)
+            theta = np.random.uniform(min_theta, max_theta)
+            phi = np.random.uniform(min_phi, max_phi)
 
-        # 3. Spherical to Cartesian Conversion (Z-up)
-        # x = forward (depth), y = side (width), z = up (height)
-        self.target_pos[0] = rho * np.cos(phi) * np.cos(theta)
-        self.target_pos[1] = rho * np.cos(phi) * np.sin(theta)
-        self.target_pos[2] = rho * np.sin(phi)
+            self.dynamic_goal_pos[0] = rho * np.cos(phi) * np.cos(theta)
+            self.dynamic_goal_pos[1] = rho * np.cos(phi) * np.sin(theta)
+            self.dynamic_goal_pos[2] = rho * np.sin(phi)
 
-        # Offset: Add to robot base position if base is not at (0,0,0)
-        self.target_pos += self.base_pos_world
+            self.dynamic_goal_pos += self.base_pos_world
+
+        elif self.task == "lift":
+            target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+            cube_pos_world = self.data.xpos[target_cube_id].copy()
+
+            lift_height = np.random.uniform(0.15, 0.25)
+
+            self.dynamic_goal_pos = cube_pos_world.copy()
+            self.dynamic_goal_pos[2] += lift_height
 
     def _compute_reward(self):
         """
@@ -196,42 +268,83 @@ class RobotArmEnv(gymnasium.Env):
         ee_pos = self.data.site("gripperframe").xpos
 
         if self.task == "reach":
-            distance = np.linalg.norm(ee_pos - self.target_pos)
+            distance = np.linalg.norm(ee_pos - self.dynamic_goal_pos)
 
             if self.reward_type == "sparse":
                 return 1.0 if distance < 0.05 else 0.0
             elif self.reward_type == "dense":
                 return 1.0 - np.tanh(3.0 * distance)
 
-        elif self.task == "pick_place":
-            pass
-            # cube_pos = self.get_body_pos("cube_a")
-            # box_pos = self.get_body_pos("box_1")
-            #
-            # # Stage 1: Grasping (Is the cube lifted off the table?)
-            # # Assume table height is 0.0
-            # is_lifted = cube_pos[2] > 0.05
-            #
-            # # Stage 2: Placing (Is cube inside the box radius?)
-            # # We ignore Z for distance check to make it easier
-            # dist_to_box = np.linalg.norm(cube_pos[:2] - box_pos[:2])
-            # is_in_box = dist_to_box < 0.08 and is_lifted
-            #
-            # reward = 0.0
-            # if is_lifted:
-            #     reward += 0.5
-            # if is_in_box:
-            #     reward += 0.5  # Total 1.0
-            #
-            # return reward
+
+        elif self.task == "lift":
+            target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+            cube_pos = self.data.xpos[target_cube_id].copy()
+
+            # --- 1. Grasp Analysis (New Continuous Logic) ---
+            dist_ee_cube = np.linalg.norm(ee_pos - cube_pos)
+            # Get sensor data (Raw force in Newtons)
+            left_f = self.data.sensordata[self.left_jaw_sensor_id]
+            right_f = self.data.sensordata[self.right_jaw_sensor_id]
+
+            # We take the MIN to ensure BOTH fingers are engaging (pincer grasp)
+            # If it pushes with one finger, min_force is 0.
+            min_force = min(left_f, right_f)
+            # Continuous reward: Encourages applying force [0.0 to 1.0]
+            # Scaling factor /5.0 means 5N of force gives ~0.76 reward
+            continuous_grasp_reward = np.tanh(min_force / 5.0)
+            # Discrete "Latching" Bonus:
+            # If we have a solid grip (> 1N on both fingers), give a massive cookie.
+            has_solid_grip = min_force > 1.0
+            grasp_bonus = 2.0 if has_solid_grip else 0.0
+
+            # --- 2. Lift/Goal Analysis ---
+            dist_from_table = cube_pos[2] - self.object_start_height
+            is_lifted = dist_from_table > 0.05
+
+            dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
+            is_goal = dist_z < 0.05
+
+            if self.reward_type == "sparse":
+                reward = 0.0
+                # Using has_solid_grip instead of distance check for robustness
+                if has_solid_grip: reward += 0.5
+                if has_solid_grip and is_lifted: reward += 0.5
+                if has_solid_grip and is_lifted and is_goal: reward += 0.5
+                return reward
+
+            elif self.reward_type == "dense":
+                # A. Approach Reward (Max 1.0)
+                # Helps the robot find the cube
+                reach_reward = 1.0 - np.tanh(5.0 * dist_ee_cube)
+
+                # B. Hoist Reward (Max 1.0)
+                # Only active if we have a grip, otherwise the robot might just
+                # punch the cube into the air to get height reward.
+                if has_solid_grip:
+                    # If we are at the goal height, max this out
+                    if is_goal:
+                        hoist_reward = 1.0
+                    else:
+                        # Continuous feedback for every cm lifted
+                        hoist_reward = np.tanh(20.0 * dist_from_table)
+                else:
+                    hoist_reward = 0.0
+
+                # C. Precision Goal Reward (Max 1.0)
+                dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                precision_reward = 1.0 - np.tanh(5.0 * dist_to_goal)
+
+                # Total Sum
+                # We multiply continuous_grasp_reward by 0.5 so it doesn't overpower the reach
+                # but the grasp_bonus (2.0) is the main driver.
+                return reach_reward + (continuous_grasp_reward * 0.5) + grasp_bonus + hoist_reward + precision_reward
 
         return 0.0
 
     def step(self, action: np.ndarray):
         if self.control_mode == 0:
-            scale = np.pi / 100.0
             current_arm_ctrl = self.data.ctrl[:5].copy()
-            target_arm_ctrl = current_arm_ctrl + (action[:5] * scale)
+            target_arm_ctrl = current_arm_ctrl + (action[:5] * self.action_scale)
 
             target_arm_ctrl = np.clip(target_arm_ctrl, self.joint_min[:5], self.joint_max[:5])
 
@@ -245,9 +358,6 @@ class RobotArmEnv(gymnasium.Env):
                     self.data.ctrl[5] = self.joint_max[5]  # Open
                 else:
                     self.data.ctrl[5] = self.joint_min[5]  # Closed
-
-
-
 
         for _ in range(self.FRAME_SKIP):
             mujoco.mj_step(self.model, self.data)
@@ -302,10 +412,15 @@ class RobotArmEnv(gymnasium.Env):
         for _ in range(10):
             mujoco.mj_step(self.model, self.data)
 
-        self.cube_a_id = self.model.body("cube_a").id
-        self.cube_b_id = self.model.body("cube_b").id
-
         self.base_pos_world = self.data.body("base").xpos
+
+        self.object_focus_idx = np.random.randint(0, 2)
+        self.object_focus_one_hot = np.zeros(2)
+        self.object_focus_one_hot[self.object_focus_idx] = 1.0
+
+        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+        target_cube_pos = self.data.xpos[target_cube_id].copy()
+        self.object_start_height = target_cube_pos[2]
 
         self._sample_target()
         self.timesteps = 0
@@ -319,17 +434,56 @@ class RobotArmEnv(gymnasium.Env):
                     self.model, self.data, show_left_ui=False, show_right_ui=False)
 
             if self.viewer.is_running():
-                self.viewer.user_scn.ngeom = 1
-                mujoco.mjv_initGeom(
-                    self.viewer.user_scn.geoms[0],
-                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.02, 0, 0],  # Radius 2cm
-                    pos=self.target_pos,  # <--- Use the class variable
-                    mat=np.eye(3).flatten(),
-                    rgba=[1, 0, 0, 0.5]  # Red, semi-transparent ghost
-                )
-
+                self._render_geoms(self.viewer.user_scn)
                 self.viewer.sync()
+        elif self.render_mode == "rgb_array":
+            if self.renderer is None:
+                self.renderer = mujoco.Renderer(self.model, height=480, width=640)
+                # Hack: Renderer constructor doesn't store cam_id permanently in some versions,
+                # so we update the scene with the specific camera
+                self.renderer.update_scene(self.data, camera="main_cam")
+            else:
+                self.renderer.update_scene(self.data, camera="main_cam")
+
+            self._render_geoms(self.renderer.scene)
+            return self.renderer.render()
+
+    def _render_geoms(self, scene):
+        scene.ngeom += 2
+        # Render left jaw sensor
+        left_sensor_pos = self.data.site("left_pad_site").xpos
+        left_sensor_mat = self.data.site("left_pad_site").xmat
+        mujoco.mjv_initGeom(
+            scene.geoms[1],
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.003, 0.005, 0.028],  # Radius 0.02
+            pos=left_sensor_pos,  # Position at our target
+            mat=left_sensor_mat,  # Identity matrix for orientation
+            rgba=[0, 1, 0, 0.3]  # Green color, opaque
+        )
+        # Render right jaw sensor
+        right_sensor_pos = self.data.site("right_pad_site").xpos
+        right_sensor_mat = self.data.site("right_pad_site").xmat
+        mujoco.mjv_initGeom(
+            scene.geoms[2],
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.003, 0.028, 0.005],  # Radius 0.02
+            pos=right_sensor_pos,  # Position at our target
+            mat=right_sensor_mat,  # Identity matrix for orientation
+            rgba=[0, 1, 0, 0.3]  # Green color, opaque
+        )
+        if self.task != "base":
+            scene.ngeom += 1
+            color = [1, 0, 0, 0.4] if self.object_focus_idx == 0 else [0, 0, 1, 0.4]
+            # Render target position
+            mujoco.mjv_initGeom(
+                scene.geoms[0],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.02, 0, 0],  # Radius 2cm
+                pos=self.dynamic_goal_pos,  # <--- Use the class variable
+                mat=np.eye(3).flatten(),
+                rgba=color
+            )
 
     def _get_info(self):
         """
@@ -366,8 +520,9 @@ class RobotArmEnv(gymnasium.Env):
         if self.viewer is not None:
             self.viewer.close()
 
+
 if __name__ == "__main__":
-    env = RobotArmEnv(render_mode="human")
+    env = RobotArmEnv(render_mode="human", task="lift")
     obs, info = env.reset(seed=0)
     done = False
     while not done:
