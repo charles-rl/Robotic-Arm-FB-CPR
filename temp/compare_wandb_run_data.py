@@ -5,19 +5,19 @@ import seaborn as sns
 
 # --- CONFIGURATION ---
 ENTITY = "charlessosmena0-academia-sinica"  # <--- REPLACE THIS
-PROJECT = "so101-reach-fb"  # <--- REPLACE THIS IF DIFFERENT
+PROJECT = "so101-lift-fb"  # <--- REPLACE THIS IF DIFFERENT
 
 # Define the runs you want to compare
 # ID is the random code in the URL (e.g., 'wandb.ai/user/proj/runs/abc12345' -> 'abc12345')
 runs_config = [
     {
-        "id": "nywxavh2",  # REPLACE WITH SAC RUN ID
+        "id": "p79cjxkl",  # REPLACE WITH SAC RUN ID
         "name": "SAC (SB3)",
-        "x_key": "global_step",  # The X-axis you created
-        "y_key": "rollout/ep_rew_mean"
+        "x_key": "env_steps",  # The X-axis you created
+        "y_key": "rollout/raw_episode_reward"
     },
     {
-        "id": "irhvlkwo",  # REPLACE WITH TD-MPC RUN ID
+        "id": "5rs5tmqt",  # REPLACE WITH TD-MPC RUN ID
         "name": "TD-MPC2",
         "x_key": "_step",  # TD-MPC2 usually uses 'step' or 'episode'
         "y_key": "train/episode_reward"
@@ -103,7 +103,7 @@ def plot_comparison():
     for name in full_df["Algorithm"].unique():
         subset = full_df[full_df["Algorithm"] == name].sort_values("Step")
         # Rolling window of 10 episodes
-        subset["Smoothed"] = subset["Reward"].rolling(window=100).mean()
+        subset["Smoothed"] = subset["Reward"].rolling(window=10).mean()
         plt.plot(subset["Step"], subset["Smoothed"], linewidth=2, label=f"{name} (Smoothed)")
 
     plt.title("SAC vs TD-MPC2: Reach Task", fontsize=16)

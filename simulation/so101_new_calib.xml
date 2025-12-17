@@ -31,6 +31,14 @@
       <joint damping="0.01" frictionloss="0" armature="0.01" limited="true" range="-0.008726646259971648 0.008726646259971648"/>
     </default>
   </default>
+  <default>
+    <default class="rubber_pad">
+      <!-- friction: slide, spin, roll. 2.0 is very sticky. -->
+      <!-- solimp/solref: Makes the contact softer (like rubber) instead of rigid -->
+      <!-- condim=4: Enables torsional friction (prevents cube from spinning in fingers) -->
+      <geom friction="2.0 0.1 0.002" solimp="0.95 0.99 0.001" solref="0.004 1" condim="4" group="3" rgba="0.3 0.3 0.3 1"/>
+    </default>
+  </default>
   <worldbody>
     <!-- Link base -->
     <body name="base" pos="-0.45 0 0.4" quat="1 0 0 0" childclass="so101_new_calib">
@@ -99,8 +107,11 @@
               <!-- Link gripper -->
               <body name="gripper" pos="5.55112e-17 -0.0611 0.0181" quat="0.0172091 -0.0172091 0.706897 0.706897">
                 <!-- Environment Changed -->
+                <!-- NEW: Physical Collision Pad (Fixed Finger) -->
+                <!-- Same pos/size as your site -->
+                <geom name="left_pad_geom" type="box" class="rubber_pad" pos="-0.0085 -0.000218121 -0.0741274" size="0.0025 0.005 0.028"/>
                 <!-- Left Finger Sensor Site -->
-                <site name="left_pad_site" type="box" pos="-0.0079 -0.000218121 -0.0741274" size="0.003 0.005 0.028" rgba="1 0 0 0.5" group="3"/>
+                <site name="left_pad_site" type="box" pos="-0.0085 -0.000218121 -0.0741274" size="0.0025 0.005 0.028" rgba="1 0 0 0.5" group="3"/>
                 <!-- Joint from wrist to gripper -->
                 <joint axis="0 0 1" name="wrist_roll" type="hinge" range="-2.7438472969992493 2.841206309382605" class="sts3215"/>
                 <inertial pos="0.000213627 0.000245138 -0.025187" mass="0.087" fullinertia="2.75087e-05 4.33657e-05 3.45059e-05 -3.35241e-07 -5.7352e-06 -5.17847e-08"/>
@@ -115,8 +126,10 @@
                 <!-- Link moving_jaw_so101_v1 -->
                 <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 -1.85362e-08 1.85362e-08">
                   <!-- Environment Changed -->
+                  <!-- NEW: Physical Collision Pad (Moving Finger) -->
+                  <geom name="right_pad_geom" type="box" class="rubber_pad" pos="-0.012 -0.0505 0.0189" size="0.0025 0.028 0.005"/>
                   <!-- Right Finger Sensor Site -->
-                  <site name="right_pad_site" type="box" pos="-0.015 -0.0505 0.0186" size="0.003 0.028 0.005" rgba="1 0 0 0.5" group="3"/>
+                  <site name="right_pad_site" type="box" pos="-0.012 -0.0505 0.0189" size="0.0025 0.028 0.005" rgba="1 0 0 0.5" group="3"/>
                   <!-- Joint from gripper to moving_jaw_so101_v1 -->
                   <joint axis="0 0 1" name="gripper" type="hinge" range="-0.17453297762778586 1.7453291995659765" class="sts3215"/>
                   <inertial pos="-0.00157495 -0.0300244 0.0192755" mass="0.012" fullinertia="6.61427e-06 1.89032e-06 5.28738e-06 -3.19807e-07 -5.90717e-09 -1.09945e-07"/>

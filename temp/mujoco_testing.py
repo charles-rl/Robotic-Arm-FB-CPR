@@ -170,6 +170,142 @@ def action_joints_mink_ik_super_final():
             viewer.sync()
 
 
+def action_joints_open_space():
+    # --- 1. SETUP PYGAME FOR INPUT ---
+    pygame.init()
+    screen = pygame.display.set_mode((300, 100))
+    pygame.display.set_caption("W/S: X | A/D: Y | Space/Ctrl: Z")
+
+    # 2. Load the Model and Data
+    model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
+    data = mujoco.MjData(model)
+
+    # Perform a forward kinematic step to get initial positions
+    mujoco.mj_forward(model, data)
+
+    # --- 3. SETUP END EFFECTOR CONTROL ---
+    # Find the ID of the body you want to control (the gripper)
+    # Change 'gripper' to 'link6' or 'hand' if your XML uses different names
+    ee_name = 'gripper'
+    ee_id = model.body(ee_name).id
+
+    # Initialize the target position to the current robot position so it doesn't snap away
+    target_ee_pos = data.xpos[ee_id].copy()
+    target_positions = np.zeros(6)
+    move_speed = 0.001  # Meters per loop
+
+    # 4. Launch the Viewer
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        start_time = time.time()
+
+        while viewer.is_running():
+            step_start = time.time()
+
+            # A. HANDLE INPUT (Cartesian Control)
+            pygame.event.pump()
+            keys = pygame.key.get_pressed()
+
+            # X Axis
+            if keys[pygame.K_w]: target_ee_pos[0] += move_speed
+            if keys[pygame.K_s]: target_ee_pos[0] -= move_speed
+
+            # Y Axis
+            if keys[pygame.K_a]: target_ee_pos[1] += move_speed
+            if keys[pygame.K_d]: target_ee_pos[1] -= move_speed
+
+            # Z Axis
+            if keys[pygame.K_SPACE]: target_ee_pos[2] += move_speed
+            if keys[pygame.K_LCTRL]: target_ee_pos[2] -= move_speed
+
+            # B. INVERSE KINEMATICS (Calculate joint angles to reach target)
+            # 1. Calculate the error
+            current_ee_pos = data.xpos[ee_id]
+            error = target_ee_pos - current_ee_pos
+
+            # 2. Calculate the Jacobian
+            # 3xN matrix. N (nv) is 18 in your case.
+            jacp = np.zeros((3, model.nv))
+            mujoco.mj_jacBody(model, data, jacp, None, ee_id)
+
+            # 3. Solve for joint velocities (dq)
+            limit = 0.1
+            error_clamped = np.clip(error, -limit, limit)
+            jacp_pinv = np.linalg.pinv(jacp)
+            dq = jacp_pinv @ error_clamped  # dq has shape (18,)
+
+            # 4. Apply to controls
+            # FIX: We only care about the robot actuators (model.nu, likely 6)
+            # We assume the robot joints are the first ones in the list.
+
+            n_actuators = model.nu  # Number of motors (6)
+
+            # Get the current angles of JUST the robot arm
+            current_robot_qpos = data.qpos[:n_actuators]
+            if keys[pygame.K_e]:
+                current_robot_qpos[4] += 0.01
+            if keys[pygame.K_q]:
+                current_robot_qpos[4] -= 0.01
+
+            # Joint 6 Control
+            if keys[pygame.K_1]:
+                current_robot_qpos[5] += 0.01
+            if keys[pygame.K_2]:
+                current_robot_qpos[5] -= 0.01
+
+            # Get the calculated velocity for JUST the robot arm
+            robot_dq = dq[:n_actuators]
+
+            # Add them together
+            q_target = current_robot_qpos + robot_dq
+
+            # Update control
+            data.ctrl[:n_actuators] = q_target
+
+            # C. PHYSICS STEP
+            mujoco.mj_step(model, data)
+
+            # D. VISUALIZATION (Draw the Dot)
+            # We use the user_scn (User Scene) to add geometric primitives
+            viewer.user_scn.ngeom = 3
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[0],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.02, 0, 0],  # Radius 0.02
+                pos=target_ee_pos,  # Position at our target
+                mat=np.eye(3).flatten(),  # Identity matrix for orientation
+                rgba=[1, 0, 0, 1]  # Red color, opaque
+            )
+            left_sensor_pos = data.site("left_pad_site").xpos
+            left_sensor_mat = data.site("left_pad_site").xmat
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[1],
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=model.site("left_pad_site").size,  # Radius 0.02
+                pos=left_sensor_pos,  # Position at our target
+                mat=left_sensor_mat,  # Identity matrix for orientation
+                rgba=[0, 1, 0, 0.3]  # Green color, opaque
+            )
+            right_sensor_pos = data.site("right_pad_site").xpos
+            right_sensor_mat = data.site("right_pad_site").xmat
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[2],
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=model.site("right_pad_site").size,  # Radius 0.02
+                pos=right_sensor_pos,  # Position at our target
+                mat=right_sensor_mat,  # Identity matrix for orientation
+                rgba=[0, 1, 0, 0.3]  # Green color, opaque
+            )
+
+            # E. RENDER & SYNC
+            viewer.sync()
+
+            # Frame rate limit
+            time_until_next_step = model.opt.timestep - (time.time() - step_start)
+            if time_until_next_step > 0:
+                time.sleep(time_until_next_step)
+
+        pygame.quit()
+
 def action_joints_mink_ik_final():
     # --- 1. SETUP ---
     model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
@@ -677,4 +813,4 @@ def action_joints_manual():
         pygame.quit()
 
 if __name__ == "__main__":
-    action_joints_mink_ik_super_final()
+    action_joints_open_space()

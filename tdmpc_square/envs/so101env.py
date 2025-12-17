@@ -95,7 +95,7 @@ class RobotArmEnv(gymnasium.Env):
             dense
         """
         self.renderer = None
-        self.model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
+        self.model = mujoco.MjModel.from_xml_path("../../simulation/scene.xml")
         self.data = mujoco.MjData(self.model)
         self.viewer = None
         self.task = task

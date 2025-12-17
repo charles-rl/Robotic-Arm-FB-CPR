@@ -449,6 +449,7 @@ class RobotArmEnv(gymnasium.Env):
             return self.renderer.render()
 
     def _render_geoms(self, scene):
+        # TODO: Maybe remove mocap body target if not used for control modes
         scene.ngeom += 2
         # Render left jaw sensor
         left_sensor_pos = self.data.site("left_pad_site").xpos
@@ -456,7 +457,7 @@ class RobotArmEnv(gymnasium.Env):
         mujoco.mjv_initGeom(
             scene.geoms[1],
             type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[0.003, 0.005, 0.028],  # Radius 0.02
+            size=self.model.site("left_pad_site").size,  # Radius 0.02
             pos=left_sensor_pos,  # Position at our target
             mat=left_sensor_mat,  # Identity matrix for orientation
             rgba=[0, 1, 0, 0.3]  # Green color, opaque
@@ -467,23 +468,34 @@ class RobotArmEnv(gymnasium.Env):
         mujoco.mjv_initGeom(
             scene.geoms[2],
             type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[0.003, 0.028, 0.005],  # Radius 0.02
+            size=self.model.site("right_pad_site").size,  # Radius 0.02
             pos=right_sensor_pos,  # Position at our target
             mat=right_sensor_mat,  # Identity matrix for orientation
             rgba=[0, 1, 0, 0.3]  # Green color, opaque
         )
         if self.task != "base":
             scene.ngeom += 1
-            color = [1, 0, 0, 0.4] if self.object_focus_idx == 0 else [0, 0, 1, 0.4]
-            # Render target position
-            mujoco.mjv_initGeom(
-                scene.geoms[0],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.02, 0, 0],  # Radius 2cm
-                pos=self.dynamic_goal_pos,  # <--- Use the class variable
-                mat=np.eye(3).flatten(),
-                rgba=color
-            )
+            if self.task == "reach":
+                # Render target position
+                mujoco.mjv_initGeom(
+                    scene.geoms[0],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.02, 0, 0],  # Radius 2cm
+                    pos=self.dynamic_goal_pos,  # <--- Use the class variable
+                    mat=np.eye(3).flatten(),
+                    rgba=[1, 0, 0, 0.4]
+                )
+            elif self.task == "lift":
+                color = [1, 0, 0, 0.4] if self.object_focus_idx == 0 else [0, 0, 1, 0.4]
+                # Render target position
+                mujoco.mjv_initGeom(
+                    scene.geoms[0],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.02, 0, 0],  # Radius 2cm
+                    pos=self.dynamic_goal_pos,  # <--- Use the class variable
+                    mat=np.eye(3).flatten(),
+                    rgba=color
+                )
 
     def _get_info(self):
         """
