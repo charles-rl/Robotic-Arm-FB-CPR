@@ -275,14 +275,29 @@ class RobotArmEnv(gymnasium.Env):
             elif self.reward_type == "dense":
                 return 1.0 - np.tanh(3.0 * distance)
 
+
         elif self.task == "lift":
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos = self.data.xpos[target_cube_id].copy()
 
-            # 1. Grasp Check
+            # --- 1. Grasp Analysis (New Continuous Logic) ---
             dist_ee_cube = np.linalg.norm(ee_pos - cube_pos)
-            has_grasp = dist_ee_cube < 0.05
+            # Get sensor data (Raw force in Newtons)
+            left_f = self.data.sensordata[self.left_jaw_sensor_id]
+            right_f = self.data.sensordata[self.right_jaw_sensor_id]
 
+            # We take the MIN to ensure BOTH fingers are engaging (pincer grasp)
+            # If it pushes with one finger, min_force is 0.
+            min_force = min(left_f, right_f)
+            # Continuous reward: Encourages applying force [0.0 to 1.0]
+            # Scaling factor /5.0 means 5N of force gives ~0.76 reward
+            continuous_grasp_reward = np.tanh(min_force / 5.0)
+            # Discrete "Latching" Bonus:
+            # If we have a solid grip (> 1N on both fingers), give a massive cookie.
+            has_solid_grip = min_force > 0.5
+            grasp_bonus = 2.0 if has_solid_grip else 0.0
+
+            # --- 2. Lift/Goal Analysis ---
             dist_from_table = cube_pos[2] - self.object_start_height
             is_lifted = dist_from_table > 0.05
 
@@ -291,29 +306,38 @@ class RobotArmEnv(gymnasium.Env):
 
             if self.reward_type == "sparse":
                 reward = 0.0
-                if has_grasp: reward += 0.5
-                if has_grasp and is_lifted: reward += 0.5
-                if has_grasp and is_lifted and is_goal: reward += 0.5
+                # Using has_solid_grip instead of distance check for robustness
+                if has_solid_grip: reward += 0.5
+                if has_solid_grip and is_lifted: reward += 0.5
+                if has_solid_grip and is_lifted and is_goal: reward += 0.5
                 return reward
 
             elif self.reward_type == "dense":
-                # Component 1: Reach (Max 1.0)
-                # We prioritize the grasp. If we have the grasp, we assume reach is maxed.
+                # A. Approach Reward (Max 1.0)
+                # Helps the robot find the cube
                 reach_reward = 1.0 - np.tanh(5.0 * dist_ee_cube)
 
-                if has_grasp:
-                    if not is_goal:
-                        hoist_reward = np.tanh(20.0 * dist_from_table)
-                    else:
+                # B. Hoist Reward (Max 1.0)
+                # Only active if we have a grip, otherwise the robot might just
+                # punch the cube into the air to get height reward.
+                if has_solid_grip:
+                    # If we are at the goal height, max this out
+                    if is_goal:
                         hoist_reward = 1.0
-
-                    dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                    precision_reward = 1 - np.tanh(5.0 * dist_to_goal)
-
-                    return 1.0 + hoist_reward + precision_reward
+                    else:
+                        # Continuous feedback for every cm lifted
+                        hoist_reward = np.tanh(20.0 * dist_from_table)
                 else:
-                    # If we don't have the cube, only reward reaching for it
-                    return reach_reward
+                    hoist_reward = 0.0
+
+                # C. Precision Goal Reward (Max 1.0)
+                dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                precision_reward = 1.0 - np.tanh(5.0 * dist_to_goal)
+
+                # Total Sum
+                # We multiply continuous_grasp_reward by 0.5 so it doesn't overpower the reach
+                # but the grasp_bonus (2.0) is the main driver.
+                return reach_reward + (continuous_grasp_reward * 0.5) + grasp_bonus + hoist_reward + precision_reward
 
         return 0.0
 

@@ -4,397 +4,296 @@ import mujoco
 import mujoco.viewer
 import imageio
 import pygame
+from scipy.spatial.transform import Rotation as R
+import mink
 
 
-def _sample_target(base_pos_world):
+# --- 1. HELPER FUNCTION FROM MINK EXAMPLE ---
+def converge_ik(configuration, tasks, dt, solver, pos_threshold, ori_threshold, max_iters):
     """
-    Generates a random target position using spherical coordinates.
-    Adjust the limits based on the SO-101 dimensions.
+    Runs up to 'max_iters' of IK steps. Returns True if position and orientation
+    are below thresholds, otherwise False.
     """
-    # 1. Define Limits (SO-101 Specifics)
-    # Rho (Radius): Min to avoid hitting self, Max to stay within reach
-    min_rho, max_rho = 0.2, 0.35
+    for _ in range(max_iters):
+        vel = mink.solve_ik(configuration, tasks, dt, solver, 1e-3)
+        configuration.integrate_inplace(vel, dt)
 
-    # Theta (Azimuth/Yaw): Left-to-Right reach
-    # 0 is forward. -pi/2 is right, pi/2 is left.
-    min_theta, max_theta = -np.pi / 3, np.pi / 3
+        # Only checking the first FrameTask here (end_effector_task).
+        # If you want to check multiple tasks, sum or combine their errors.
+        err = tasks[0].compute_error(configuration)
+        pos_achieved = np.linalg.norm(err[:3]) <= pos_threshold
+        ori_achieved = np.linalg.norm(err[3:]) <= ori_threshold
 
-    # Phi (Elevation/Pitch): Up-and-Down reach
-    # 0 is horizontal table level, pi/2 is straight up.
-    min_phi, max_phi = np.pi / 36, 4 * np.pi / 9
+        if pos_achieved and ori_achieved:
+            return True
+    return False
 
-    # 2. Random Sampling
-    rho = np.random.uniform(min_rho, max_rho)
-    theta = np.random.uniform(min_theta, max_theta)
-    phi = np.random.uniform(min_phi, max_phi)
-
-    # 3. Spherical to Cartesian Conversion (Z-up)
-    # x = forward (depth), y = side (width), z = up (height)
-    x = rho * np.cos(phi) * np.cos(theta)
-    y = rho * np.cos(phi) * np.sin(theta)
-    z = rho * np.sin(phi)
-
-    # Offset: Add to robot base position if base is not at (0,0,0)
-    target_pos = np.array([x, y, z])
-    target_pos += base_pos_world
-    return target_pos
-
-def init_simulation_test():
-    # --- 1. SETUP PYGAME FOR INPUT ---
-    pygame.init()
-    screen = pygame.display.set_mode((300, 100))
-    pygame.display.set_caption("W/S: X | A/D: Y | Space/Ctrl: Z")
-
-    # 2. Load the Model and Data
+# --- 2. MAIN CONTROL LOOP ---
+def action_joints_mink_ik_super_final():
+    # Setup Model
     model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
     data = mujoco.MjData(model)
 
-    # RESET LOGIC
-    joint_names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
+    # Setup Mink Configuration
+    configuration = mink.Configuration(model)
 
-    joint_min = model.jnt_range[:6, 0]
-    joint_max = model.jnt_range[:6, 1]
+    # Setup Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((400, 100))
+    pygame.display.set_caption("Mink: Converge IK Mode")
+    clock = pygame.time.Clock()
 
-    mujoco.mj_resetData(model, data)
-    n_joints = len(joint_names)
-    data.qpos[:n_joints] = np.array([
-        0.0,
-        joint_min[1],
-        joint_max[2],
-        0.0,
-        0.0,
-        joint_min[-1],  # Close gripper
-    ], dtype=np.float32)
-    data.qvel[:n_joints] = 0.0
-
-    possible_start_positions = [
-        [-0.25, 0.00, 0.43],  # 1. Center
-        [-0.25, 0.15, 0.43],  # 2. Left
-        [-0.25, -0.15, 0.43],  # 3. Right
-        [-0.10, 0.10, 0.43],  # 4. Far Left
-        [-0.10, -0.10, 0.43],  # 5. Far Right
-    ]
-
-    chosen_indices = np.random.choice(
-        len(possible_start_positions),
-        size=2,
-        replace=False
+    # --- DEFINE TASKS (Faithful to Example) ---
+    # 1. End Effector Task (The target we control)
+    ee_task = mink.FrameTask(
+        frame_name="gripperframe",
+        frame_type="site",
+        position_cost=1.0,
+        orientation_cost=1.0,
+        lm_damping=1.0,
     )
-    chosen_indices = [-1, -2]
 
-    pos_a = possible_start_positions[chosen_indices[0]]
-    pos_b = possible_start_positions[chosen_indices[1]]
+    # 2. Posture Task (Keeps arm natural)
+    posture_task = mink.PostureTask(model, cost=1e-2)
+    tasks = [ee_task, posture_task]
 
-    cube_a_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_a_joint")
-    adr_a = model.jnt_qposadr[cube_a_id]
+    # # --- INITIALIZATION ---
+    # # 1. Sync physics
+    # mujoco.mj_forward(model, data)
+    #
+    # # 2. Sync Configuration to current robot state
+    # configuration.update(data.qpos)
+    # posture_task.set_target_from_configuration(configuration)
+    #
+    # # 3. Create a Virtual Target (Simulating the 'mocap' from the example)
+    # # We initialize it exactly where the gripper site is right now
+    # site_id = model.site("gripperframe").id
+    # start_pos = data.site_xpos[site_id].copy()
+    # start_mat = data.site_xmat[site_id].reshape(3, 3).copy()
+    #
+    # # Create the SE3 object for the target
+    # target_rotation = mink.SO3.from_matrix(start_mat)
+    # target_translation = start_pos
 
-    # Set Position [x, y, z]
-    data.qpos[adr_a: adr_a + 3] = pos_a
-    # Set Orientation [w, x, y, z] - Identity Quaternion (No rotation)
-    # data.qpos[adr_a + 3: adr_a + 7] = [1, 0, 0, 0]
-    theta = np.random.uniform(-np.pi, np.pi)
-    data.qpos[adr_a + 3: adr_a + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+    # Parameters
+    solver = "quadprog"
+    pos_threshold = 1e-4
+    ori_threshold = 1e-4
+    max_iters = 20  # How hard the solver tries per frame
+    dt = model.opt.timestep
 
-    cube_b_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_b_joint")
-    adr_b = model.jnt_qposadr[cube_b_id]
+    move_speed = 0.005
+    rot_speed = 0.05
 
-    data.qpos[adr_b: adr_b + 3] = pos_b
-    # data.qpos[adr_b + 3: adr_b + 7] = [1, 0, 0, 0]
-    theta = np.random.uniform(-np.pi, np.pi)
-    data.qpos[adr_b + 3: adr_b + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-    # RESET LOGIC
+    print("Control Ready. Using converge_ik strategy.")
 
-    # Perform a forward kinematic step to get initial positions
-    mujoco.mj_forward(model, data)
+    with mujoco.viewer.launch_passive(
+            model, data, show_left_ui=False, show_right_ui=False
+    ) as viewer:
+        mujoco.mjv_defaultFreeCamera(model, viewer.cam)
 
-    for _ in range(10):
-        mujoco.mj_step(model, data)
+        # Reset simulation data to the 'home' keyframe
+        mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
+        configuration.update(data.qpos)
+        posture_task.set_target_from_configuration(configuration)
+        mujoco.mj_forward(model, data)
 
-    # --- 3. SETUP END EFFECTOR CONTROL ---
-    # Find the ID of the body you want to control (the gripper)
-    # Change 'gripper' to 'link6' or 'hand' if your XML uses different names
-    ee_name = 'gripper'
-    ee_id = model.body(ee_name).id
-    # ee_id = data.site("gripperframe").id
-
-    # Initialize the target position to the current robot position so it doesn't snap away
-    target_ee_pos = data.xpos[ee_id].copy()
-    target_positions = np.zeros(6)
-    move_speed = 0.001  # Meters per loop
-
-    target_pos = np.zeros(3)
-
-    # 4. Launch the Viewer
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        start_time = time.time()
-
+        # Move the mocap target to the end-effector's current pose
+        mink.move_mocap_to_frame(model, data, "target", "gripperframe", "site")
+        initial_target_position = data.mocap_pos[0].copy()
+        amp = 0.10
+        freq = 0.2
         while viewer.is_running():
-            step_start = time.time()
+            clock.tick(60)
 
-            # A. HANDLE INPUT (Cartesian Control)
+            # --- A. INPUT (Updates the Virtual Target) ---
             pygame.event.pump()
             keys = pygame.key.get_pressed()
+            if keys[pygame.K_ESCAPE]: break
 
-            # X Axis
-            if keys[pygame.K_w]: target_ee_pos[0] += move_speed
-            if keys[pygame.K_s]: target_ee_pos[0] -= move_speed
+            # Position Update
+            d_pos = np.zeros(3)
+            if keys[pygame.K_w]: d_pos[0] += move_speed
+            if keys[pygame.K_s]: d_pos[0] -= move_speed
+            if keys[pygame.K_a]: d_pos[1] += move_speed  # Y-Axis Left
+            if keys[pygame.K_d]: d_pos[1] -= move_speed  # Y-Axis Right
+            if keys[pygame.K_SPACE]: d_pos[2] += move_speed
+            if keys[pygame.K_LCTRL]: d_pos[2] -= move_speed
 
-            # Y Axis
-            if keys[pygame.K_a]: target_ee_pos[1] += move_speed
-            if keys[pygame.K_d]: target_ee_pos[1] -= move_speed
+            target_translation += d_pos
 
-            # Z Axis
-            if keys[pygame.K_SPACE]: target_ee_pos[2] += move_speed
-            if keys[pygame.K_LCTRL]: target_ee_pos[2] -= move_speed
+            # Rotation Update
+            d_rot = mink.SO3.identity()
+            if keys[pygame.K_r]: d_rot = d_rot @ mink.SO3.from_x_radians(rot_speed)
+            if keys[pygame.K_f]: d_rot = d_rot @ mink.SO3.from_x_radians(-rot_speed)
+            if keys[pygame.K_t]: d_rot = d_rot @ mink.SO3.from_y_radians(rot_speed)
+            if keys[pygame.K_g]: d_rot = d_rot @ mink.SO3.from_y_radians(-rot_speed)
+            if keys[pygame.K_y]: d_rot = d_rot @ mink.SO3.from_z_radians(rot_speed)
+            if keys[pygame.K_h]: d_rot = d_rot @ mink.SO3.from_z_radians(-rot_speed)
 
-            # B. INVERSE KINEMATICS (Calculate joint angles to reach target)
-            # 1. Calculate the error
-            current_ee_pos = data.xpos[ee_id]
-            error = target_ee_pos - current_ee_pos
+            target_rotation = d_rot @ target_rotation
 
-            # 2. Calculate the Jacobian
-            # 3xN matrix. N (nv) is 18 in your case.
-            jacp = np.zeros((3, model.nv))
-            mujoco.mj_jacBody(model, data, jacp, None, ee_id)
+            # --- B. UPDATE TASK TARGET ---
+            # Combine pos/rot into an SE3 target
+            target_pose = mink.SE3.from_rotation_and_translation(target_rotation, target_translation)
+            ee_task.set_target(target_pose)
 
-            # 3. Solve for joint velocities (dq)
-            limit = 0.1
-            error_clamped = np.clip(error, -limit, limit)
-            jacp_pinv = np.linalg.pinv(jacp)
-            dq = jacp_pinv @ error_clamped  # dq has shape (18,)
+            # Run the iterative solver
+            converge_ik(
+                configuration,
+                tasks,
+                dt,
+                solver,
+                pos_threshold,
+                ori_threshold,
+                max_iters,
+            )
 
-            # 4. Apply to controls
-            # FIX: We only care about the robot actuators (model.nu, likely 6)
-            # We assume the robot joints are the first ones in the list.
+            # --- D. APPLY CONTROLS ---
+            # The 'configuration.q' now holds the solution found by IK
+            data.ctrl[:model.nu] = configuration.q[:model.nu]
 
-            n_actuators = model.nu  # Number of motors (6)
-
-            # Get the current angles of JUST the robot arm
-            current_robot_qpos = data.qpos[:n_actuators]
-            if keys[pygame.K_e]:
-                current_robot_qpos[4] += 0.01
-            if keys[pygame.K_q]:
-                current_robot_qpos[4] -= 0.01
-
-            # Joint 6 Control
-            if keys[pygame.K_1]:
-                current_robot_qpos[5] += 0.01
-            if keys[pygame.K_2]:
-                current_robot_qpos[5] -= 0.01
-
-            # Get the calculated velocity for JUST the robot arm
-            robot_dq = dq[:n_actuators]
-
-            # Add them together
-            q_target = current_robot_qpos + robot_dq
-
-            # Update control
-            data.ctrl[:n_actuators] = q_target
-
-            # C. PHYSICS STEP
+            # Step Physics
             mujoco.mj_step(model, data)
 
-            # D. VISUALIZATION (Draw the Dot)
-            # We use the user_scn (User Scene) to add geometric primitives
-            viewer.user_scn.ngeom = 3
+            # --- E. VISUALIZE TARGET ---
+            # Draw a box where we WANT the robot to be
+            viewer.user_scn.ngeom = 1
             mujoco.mjv_initGeom(
                 viewer.user_scn.geoms[0],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.02, 0, 0],  # Radius 0.02
-                pos=target_ee_pos,  # Position at our target
-                mat=np.eye(3).flatten(),  # Identity matrix for orientation
-                rgba=[1, 0, 0, 1]  # Red color, opaque
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[0.02, 0.01, 0.01],
+                pos=target_translation,
+                mat=target_rotation.as_matrix().flatten(),
+                rgba=[0, 1, 0, 0.5]
             )
-            target_pos = _sample_target(data.body("base").xpos)
-            mujoco.mjv_initGeom(
-                viewer.user_scn.geoms[1],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.02, 0, 0],  # Radius 0.02
-                pos=target_pos,  # Position at our target
-                mat=np.eye(3).flatten(),  # Identity matrix for orientation
-                rgba=[0, 1, 0, 1]  # Green color, opaque
-            )
-            ee_pos_site = data.site("gripperframe").xpos
-            mujoco.mjv_initGeom(
-                viewer.user_scn.geoms[2],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.02, 0, 0],  # Radius 0.02
-                pos=ee_pos_site,  # Position at our target
-                mat=np.eye(3).flatten(),  # Identity matrix for orientation
-                rgba=[0, 0, 1, 1]  # Blue color, opaque
-            )
-
-
-            # E. RENDER & SYNC
             viewer.sync()
 
-            # Frame rate limit
-            time_until_next_step = model.opt.timestep - (time.time() - step_start)
-            if time_until_next_step > 0:
-                time.sleep(time_until_next_step)
 
-        pygame.quit()
-
-def action_joints_open_space():
-    # --- 1. SETUP PYGAME FOR INPUT ---
-    pygame.init()
-    screen = pygame.display.set_mode((300, 100))
-    pygame.display.set_caption("W/S: X | A/D: Y | Space/Ctrl: Z")
-
-    # 2. Load the Model and Data
+def action_joints_mink_ik_final():
+    # --- 1. SETUP ---
     model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
     data = mujoco.MjData(model)
 
-    # Perform a forward kinematic step to get initial positions
+    # Initialize Mink Configuration
+    configuration = mink.Configuration(model)
+
+    # Sync configuration to the robot's starting position (CRITICAL to prevent drooping)
+    # This tells the solver: "The robot is currently HERE, not at 0,0,0"
     mujoco.mj_forward(model, data)
+    configuration.update(data.qpos)
 
-    # --- 3. SETUP END EFFECTOR CONTROL ---
-    # Find the ID of the body you want to control (the gripper)
-    # Change 'gripper' to 'link6' or 'hand' if your XML uses different names
-    ee_name = 'gripper'
-    ee_id = model.body(ee_name).id
+    # --- 2. DEFINE TASKS ---
+    # Task 1: Hand Tracking (using site 'gripperframe')
+    ee_task = mink.FrameTask(
+        frame_name="gripperframe",
+        frame_type="site",
+        position_cost=1.0,
+        orientation_cost=1.0,
+        lm_damping=1.0
+    )
 
-    # Initialize the target position to the current robot position so it doesn't snap away
-    target_ee_pos = data.xpos[ee_id].copy()
-    target_positions = np.zeros(6)
-    move_speed = 0.001  # Meters per loop
+    # Task 2: Posture (CRITICAL for stability)
+    # This acts like a "spring" pulling joints towards a comfortable pose
+    # so the arm doesn't flop around when there are multiple ways to reach a point.
+    posture_task = mink.PostureTask(model, cost=1e-2)
+    posture_task.set_target_from_configuration(configuration)
 
-    # 4. Launch the Viewer
+    tasks = [ee_task, posture_task]
+
+    # --- 3. PYGAME SETUP ---
+    pygame.init()
+    screen = pygame.display.set_mode((400, 100))
+    pygame.display.set_caption("Mink Control: " + ee_task.frame_name)
+    clock = pygame.time.Clock()
+
+    # --- FIX: Manually get SE3 from Site ---
+    site_id = model.site("gripperframe").id
+
+    # 1. Get raw data from Mujoco
+    start_pos = data.site_xpos[site_id].copy()
+    start_mat = data.site_xmat[site_id].reshape(3, 3).copy()
+
+    # 2. Create Mink objects manually
+    start_rot = mink.SO3.from_matrix(start_mat)
+    target_pose = mink.SE3.from_rotation_and_translation(start_rot, start_pos)
+
+    # Initialize task target
+    ee_task.set_target(target_pose)
+
+    move_speed = 0.005
+    rot_speed = 0.05
+
+    solver = "quadprog"
+    dt = model.opt.timestep
+
+    print(f"Controlling Site: {ee_task.frame_name}")
+
     with mujoco.viewer.launch_passive(model, data) as viewer:
-        start_time = time.time()
-
         while viewer.is_running():
-            step_start = time.time()
+            clock.tick(60)
 
-            # A. HANDLE INPUT (Cartesian Control)
+            # --- A. INPUT HANDLING ---
             pygame.event.pump()
             keys = pygame.key.get_pressed()
+            if keys[pygame.K_ESCAPE]: break
 
-            # X Axis
-            if keys[pygame.K_w]: target_ee_pos[0] += move_speed
-            if keys[pygame.K_s]: target_ee_pos[0] -= move_speed
+            # 1. Position Delta
+            d_pos = np.zeros(3)
+            if keys[pygame.K_w]: d_pos[0] += move_speed
+            if keys[pygame.K_s]: d_pos[0] -= move_speed
+            if keys[pygame.K_a]: d_pos[1] += move_speed
+            if keys[pygame.K_d]: d_pos[1] -= move_speed
+            if keys[pygame.K_SPACE]: d_pos[2] += move_speed
+            if keys[pygame.K_LCTRL]: d_pos[2] -= move_speed
 
-            # Y Axis
-            if keys[pygame.K_a]: target_ee_pos[1] += move_speed
-            if keys[pygame.K_d]: target_ee_pos[1] -= move_speed
+            # 2. Rotation Delta
+            d_rot = mink.SO3.identity()
+            if keys[pygame.K_r]: d_rot = d_rot @ mink.SO3.from_x_radians(rot_speed)
+            if keys[pygame.K_f]: d_rot = d_rot @ mink.SO3.from_x_radians(-rot_speed)
+            if keys[pygame.K_t]: d_rot = d_rot @ mink.SO3.from_y_radians(rot_speed)
+            if keys[pygame.K_g]: d_rot = d_rot @ mink.SO3.from_y_radians(-rot_speed)
+            if keys[pygame.K_y]: d_rot = d_rot @ mink.SO3.from_z_radians(rot_speed)
+            if keys[pygame.K_h]: d_rot = d_rot @ mink.SO3.from_z_radians(-rot_speed)
 
-            # Z Axis
-            if keys[pygame.K_SPACE]: target_ee_pos[2] += move_speed
-            if keys[pygame.K_LCTRL]: target_ee_pos[2] -= move_speed
+            # --- B. UPDATE TARGET STATE ---
+            new_pos = target_pose.translation() + d_pos
 
-            # B. INVERSE KINEMATICS (Calculate joint angles to reach target)
-            # 1. Calculate the error
-            current_ee_pos = data.xpos[ee_id]
-            error = target_ee_pos - current_ee_pos
+            # Apply Rotation: new = delta * old (Global rotation)
+            new_rot = d_rot @ target_pose.rotation()
 
-            # 2. Calculate the Jacobian
-            # 3xN matrix. N (nv) is 18 in your case.
-            jacp = np.zeros((3, model.nv))
-            mujoco.mj_jacBody(model, data, jacp, None, ee_id)
+            target_pose = mink.SE3.from_rotation_and_translation(new_rot, new_pos)
+            ee_task.set_target(target_pose)
 
-            # 3. Solve for joint velocities (dq)
-            limit = 0.1
-            error_clamped = np.clip(error, -limit, limit)
-            jacp_pinv = np.linalg.pinv(jacp)
-            dq = jacp_pinv @ error_clamped  # dq has shape (18,)
+            # --- C. SOLVE IK ---
+            vel = mink.solve_ik(
+                configuration,
+                tasks,
+                dt,
+                solver,
+                damping=1e-3
+            )
 
-            # 4. Apply to controls
-            # FIX: We only care about the robot actuators (model.nu, likely 6)
-            # We assume the robot joints are the first ones in the list.
+            # Update Virtual Robot
+            configuration.integrate_inplace(vel, dt)
 
-            n_actuators = model.nu  # Number of motors (6)
+            # --- D. APPLY TO REAL ROBOT ---
+            data.ctrl[:model.nu] = configuration.q[:model.nu]
 
-            # Get the current angles of JUST the robot arm
-            current_robot_qpos = data.qpos[:n_actuators]
-            if keys[pygame.K_e]:
-                current_robot_qpos[4] += 0.01
-            if keys[pygame.K_q]:
-                current_robot_qpos[4] -= 0.01
-
-            # Joint 6 Control
-            if keys[pygame.K_1]:
-                current_robot_qpos[5] += 0.01
-            if keys[pygame.K_2]:
-                current_robot_qpos[5] -= 0.01
-
-            # Get the calculated velocity for JUST the robot arm
-            robot_dq = dq[:n_actuators]
-
-            # Add them together
-            q_target = current_robot_qpos + robot_dq
-
-            # Update control
-            data.ctrl[:n_actuators] = q_target
-
-            # C. PHYSICS STEP
+            # --- E. STEP PHYSICS ---
             mujoco.mj_step(model, data)
 
-            # D. VISUALIZATION (Draw the Dot)
-            # We use the user_scn (User Scene) to add geometric primitives
-            viewer.user_scn.ngeom = 4
+            # Visualize Target
+            viewer.user_scn.ngeom = 1
             mujoco.mjv_initGeom(
                 viewer.user_scn.geoms[0],
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[0.02, 0, 0],  # Radius 0.02
-                pos=target_ee_pos,  # Position at our target
-                mat=np.eye(3).flatten(),  # Identity matrix for orientation
-                rgba=[1, 0, 0, 1]  # Red color, opaque
-            )
-            mujoco.mjv_initGeom(
-                viewer.user_scn.geoms[3],
                 type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[0.01, 0.02, 0.05],  # Radius 0.02
-                pos=data.site("gripperframe").xpos,  # Position at our target
-                mat=data.site("gripperframe").xmat,  # Identity matrix for orientation
-                rgba=[1, 0, 0, 1]  # Red color, opaque
+                size=[0.02, 0.01, 0.01],
+                pos=target_pose.translation(),
+                mat=target_pose.rotation().as_matrix().flatten(),
+                rgba=[0, 1, 0, 0.5]
             )
-            left_sensor_pos = data.site("left_pad_site").xpos
-            left_sensor_mat = data.site("left_pad_site").xmat
-            mujoco.mjv_initGeom(
-                viewer.user_scn.geoms[1],
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[0.003, 0.005, 0.028],  # Radius 0.02
-                pos=left_sensor_pos,  # Position at our target
-                mat=left_sensor_mat,  # Identity matrix for orientation
-                rgba=[0, 1, 0, 1]  # Green color, opaque
-            )
-            right_sensor_pos = data.site("right_pad_site").xpos
-            right_sensor_mat = data.site("right_pad_site").xmat
-            mujoco.mjv_initGeom(
-                viewer.user_scn.geoms[2],
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[0.003, 0.028, 0.005],  # Radius 0.02
-                pos=right_sensor_pos,  # Position at our target
-                mat=right_sensor_mat,  # Identity matrix for orientation
-                rgba=[0, 1, 0, 1]  # Green color, opaque
-            )
-
-            left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "left_finger_sensor")
-            right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "right_finger_sensor")
-
-            # In newer MuJoCo versions, you can access by name directly via data.sensor()
-            # But looking up ID and using sensordata is the most robust way.
-            left_force = data.sensordata[left_id]
-            right_force = data.sensordata[right_id]
-
-            # 2. Normalize (Optional but good for NN)
-            # Log-scale is often better because contact forces can spike to 100N+
-            # but we care about the difference between 0N and 1N.
-            left_norm = np.tanh(left_force / 5.0)
-            right_norm = np.tanh(right_force / 5.0)
-            if left_norm > 0.0 or right_norm > 0.0:
-                print(f"Left: {left_norm}, Right: {right_norm} \t Left: {left_force}, Right: {right_force}")
-
-            # E. RENDER & SYNC
             viewer.sync()
-
-            # Frame rate limit
-            time_until_next_step = model.opt.timestep - (time.time() - step_start)
-            if time_until_next_step > 0:
-                time.sleep(time_until_next_step)
-
-        pygame.quit()
-
 
 def action_joints_6d_ik():
     # --- 1. SETUP PYGAME ---
@@ -527,7 +426,6 @@ def action_joints_6d_ik():
                 rgba=[0, 1, 0, 0.5]  # Green transparent
             )
             viewer.sync()
-
 
 def action_joints_6d_control():
     # --- 1. SETUP PYGAME ---
@@ -779,4 +677,4 @@ def action_joints_manual():
         pygame.quit()
 
 if __name__ == "__main__":
-    action_joints_open_space()
+    action_joints_mink_ik_super_final()

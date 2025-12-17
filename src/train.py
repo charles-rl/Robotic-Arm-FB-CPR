@@ -122,7 +122,7 @@ def train_agent():
         log_interval = 10
         batch_size = 256
         buffer_size = 1_000_000
-        total_timesteps = 300_000
+        total_timesteps = 200_000
         video_freq = 10_000  # Save video every 10k steps
 
     # 1. Initialize WandB
