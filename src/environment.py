@@ -134,7 +134,7 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, 0.10, 0.43],  # 4. Far Left
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
-        self.action_scale = np.pi / 50.0
+        self.action_scale = np.pi / 20.0
         self.rot6d_mat = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
         self.base_pos_world = None
@@ -291,10 +291,14 @@ class RobotArmEnv(gymnasium.Env):
             min_force = min(left_f, right_f)
             # Continuous reward: Encourages applying force [0.0 to 1.0]
             # Scaling factor /5.0 means 5N of force gives ~0.76 reward
-            continuous_grasp_reward = np.tanh(min_force / 5.0)
+            is_touching_distance = dist_ee_cube < 0.03  # 3cm tolerance
+            if is_touching_distance:
+                continuous_grasp_reward = np.tanh(min_force / 5.0)
+            else:
+                continuous_grasp_reward = 0.0
             # Discrete "Latching" Bonus:
             # If we have a solid grip (> 1N on both fingers), give a massive cookie.
-            has_solid_grip = min_force > 1.0
+            has_solid_grip = (min_force > 1.0) and is_touching_distance
             grasp_bonus = 2.0 if has_solid_grip else 0.0
 
             # --- 2. Lift/Goal Analysis ---

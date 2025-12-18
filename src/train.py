@@ -119,10 +119,13 @@ def train_agent():
         total_timesteps = 10_000
         video_freq = 200
     else:
+        # reach
+        # 256 batch size
+        # total_timesteps = 200_000
         log_interval = 10
         batch_size = 256
         buffer_size = 1_000_000
-        total_timesteps = 200_000
+        total_timesteps = 300_000
         video_freq = 10_000  # Save video every 10k steps
 
     # 1. Initialize WandB
@@ -135,7 +138,7 @@ def train_agent():
 
     # 2. Create Training Env (No Render, optimized for speed)
     env = DummyVecEnv([lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK))])
-    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., clip_reward=100.)
 
     # 3. Create Evaluation/Video Env (With Render)
     # We wrap this in VecNormalize too so it understands the normalized inputs
@@ -143,6 +146,8 @@ def train_agent():
     # eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
     # We turn off training on this one, stats will be synced in the callback
     # eval_env.training = False
+
+    # not use for reach task
 
     # 4. Define Algorithm
     model = SAC(
@@ -189,7 +194,7 @@ def train_agent():
     # eval_env.close()
 
 
-def evaluate(episodes=3):
+def evaluate(episodes=3, find_best=False):
     print(f"\n--- 4. Evaluating Agent: {TASK} ---")
 
     # 1. Load Env
@@ -214,26 +219,55 @@ def evaluate(episodes=3):
     model = SAC.load(f"../models/sac_so101_{TASK}")
 
     # 5. Loop
-    for ep in range(episodes):
-        frames = []
-        obs = env.reset()
-        video_path = f"eval_ep_{ep}.mp4"
-        print(f"Simulating Episode {ep + 1}/{episodes}...")
+    if not find_best:
+        for ep in range(episodes):
+            frames = []
+            obs = env.reset()
+            video_path = f"eval_ep_{ep}.mp4"
+            print(f"Simulating Episode {ep + 1}/{episodes}...")
 
-        # We assume the env has a max_steps limit, but we use a safety break just in case
-        for i in range(max_steps + 10):
-            action, _ = model.predict(obs, deterministic=True)
-            obs, rewards, dones, info = env.step(action)
+            # We assume the env has a max_steps limit, but we use a safety break just in case
+            for i in range(max_steps + 10):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, rewards, dones, info = env.step(action)
 
-            # Use the inner env's render to get the pixel array
-            frame = env.envs[0].render()
-            frames.append(frame)
+                # Use the inner env's render to get the pixel array
+                frame = env.envs[0].render()
+                frames.append(frame)
 
-            if dones[0]:
-                break
+                if dones[0]:
+                    break
 
-        print(f"Saving {video_path}...")
-        imageio.mimsave(video_path, frames, fps=30)
+            print(f"Saving {video_path}...")
+            imageio.mimsave(video_path, frames, fps=30)
+    else:
+        num_good_eps = 0
+        while num_good_eps < episodes:
+            frames = []
+            obs = env.reset()
+            video_path = f"eval_ep_{num_good_eps}.mp4"
+            print(f"Simulating Episode {num_good_eps + 1}/{episodes}...")
+
+            # We assume the env has a max_steps limit, but we use a safety break just in case
+            total_reward = 0.0
+            for i in range(max_steps + 10):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, rewards, dones, info = env.step(action)
+                total_reward += rewards[0]
+
+                # Use the inner env's render to get the pixel array
+                frame = env.envs[0].render()
+                frames.append(frame)
+
+                if dones[0]:
+                    break
+
+            if total_reward > 550.0:
+                print(f"Saving {video_path}...")
+                imageio.mimsave(video_path, frames, fps=30)
+                num_good_eps += 1
+            else:
+                print("Failed episode")
 
 
 if __name__ == "__main__":
@@ -242,4 +276,4 @@ if __name__ == "__main__":
     if not EVAL:
         train_agent()
     else:
-        evaluate()
+        evaluate(find_best=True)

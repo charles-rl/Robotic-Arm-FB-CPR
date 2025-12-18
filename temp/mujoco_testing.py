@@ -192,7 +192,7 @@ def action_joints_open_space():
     # Initialize the target position to the current robot position so it doesn't snap away
     target_ee_pos = data.xpos[ee_id].copy()
     target_positions = np.zeros(6)
-    move_speed = 0.001  # Meters per loop
+    move_speed = 0.0005  # Meters per loop
 
     # 4. Launch the Viewer
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -242,15 +242,15 @@ def action_joints_open_space():
             # Get the current angles of JUST the robot arm
             current_robot_qpos = data.qpos[:n_actuators]
             if keys[pygame.K_e]:
-                current_robot_qpos[4] += 0.01
+                current_robot_qpos[4] += 0.005
             if keys[pygame.K_q]:
-                current_robot_qpos[4] -= 0.01
+                current_robot_qpos[4] -= 0.005
 
             # Joint 6 Control
             if keys[pygame.K_1]:
-                current_robot_qpos[5] += 0.01
+                current_robot_qpos[5] += 0.005
             if keys[pygame.K_2]:
-                current_robot_qpos[5] -= 0.01
+                current_robot_qpos[5] -= 0.005
 
             # Get the calculated velocity for JUST the robot arm
             robot_dq = dq[:n_actuators]
