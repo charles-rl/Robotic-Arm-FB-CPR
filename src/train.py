@@ -6,12 +6,11 @@ import imageio
 import wandb
 import os
 
-# --- ADDED TQC HERE ---
 from sb3_contrib import TQC, CrossQ
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.monitor import Monitor
 
@@ -22,7 +21,8 @@ DEBUG = False
 EVAL = False
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
-CONTROL_MODE = "delta_end_effector"
+CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
+REWARD_THRESHOLD = 250.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
 
@@ -43,44 +43,40 @@ class RawRewardCallback(BaseCallback):
         return True
 
 
-class VideoRecorderCallback(BaseCallback):
+# --- NEW CALLBACK TO FIX SAVING ---
+class CheckpointWithStatsCallback(BaseCallback):
     """
-    Records a video of the agent's performance every `render_freq` steps.
+    Saves the model AND the VecNormalize statistics every `save_freq` steps.
     """
 
-    def __init__(self, eval_env, render_freq: int, n_eval_episodes: int = 1, deterministic: bool = True):
-        super().__init__()
-        self._eval_env = eval_env
-        self._render_freq = render_freq
-        self._n_eval_episodes = n_eval_episodes
-        self._deterministic = deterministic
-        self.video_path = "latest_training_run.mp4"
+    def __init__(self, save_freq: int, save_path: str, name_prefix: str = "rl_model", verbose=1):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+
+    def _init_callback(self) -> None:
+        # Create folder if needed
+        if self.save_path is not None:
+            os.makedirs(self.save_path, exist_ok=True)
 
     def _on_step(self) -> bool:
-        if self.n_calls % self._render_freq == 0:
-            print(f"🎥 Recording video at step {self.num_timesteps}...")
-            if isinstance(self._eval_env, VecNormalize):
-                self._eval_env.training = False
-                self._eval_env.norm_reward = False
-                self._eval_env.obs_rms = self.training_env.obs_rms
-                self._eval_env.ret_rms = self.training_env.ret_rms
+        if self.n_calls % self.save_freq == 0:
+            # 1. Save Model
+            model_path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps")
+            self.model.save(model_path)
 
-            frames = []
-            for _ in range(self._n_eval_episodes):
-                obs = self._eval_env.reset()
-                done = False
-                while not done:
-                    frame = self._eval_env.envs[0].render()
-                    frames.append(frame)
-                    action, _ = self.model.predict(obs, deterministic=self._deterministic)
-                    obs, _, dones, _ = self._eval_env.step(action)
-                    done = dones[0]
-
-            try:
-                imageio.mimsave(self.video_path, frames, fps=30)
-                print(f"✅ Video saved to {self.video_path}")
-            except Exception as e:
-                print(f"❌ Failed to save video: {e}")
+            # 2. Save Normalization Stats
+            stats_path = os.path.join(self.save_path, f"vecnormalize_{self.num_timesteps}_steps.pkl")
+            # Get the env from the model safely
+            env = self.model.get_vec_normalize_env()
+            if env is not None:
+                env.save(stats_path)
+                if self.verbose > 1:
+                    print(f"Saved model and stats to {self.save_path}")
+            else:
+                if self.verbose > 0:
+                    print("⚠️ Warning: VecNormalize not found, only saved model.")
         return True
 
 
@@ -103,49 +99,51 @@ def train_agent():
         batch_size = 64
         buffer_size = 50_000
         total_timesteps = 10_000
-        video_freq = 200
     else:
         log_interval = 10
-        batch_size = 256
+        batch_size = 512
         buffer_size = 1_000_000
         total_timesteps = 300_000
-        video_freq = 10_000
 
     # 1. Initialize WandB
     run = wandb.init(
         project=f"so101-{TASK}-fb",
         name=RUN_NAME,
-        config={"algo": ALGO, "task": TASK},
+        config={"algo": ALGO, "task": TASK, "control": CONTROL_MODE},
         sync_tensorboard=True,
     )
 
     # 2. Create Training Env
     env = DummyVecEnv(
         [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
-    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., clip_reward=100.)
+    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
-    # 3. Create Eval Env (Optional, currently unused for speed)
-    # eval_env = DummyVecEnv([lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK)])
-    # eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
-    # eval_env.training = False
+    policy_kwargs = dict(net_arch=[256, 256])
+    if ALGO == "TQC":
+        policy_kwargs = dict(
+            use_sde=True,  # <--- 1. ENABLE gSDE (Smooth Exploration)
+            log_std_init=-3,  # Start with smaller, more precise exploration
+            net_arch=[400, 300],  # Standard architecture
+        )
 
-    # 4. Define Algorithm based on ALGO selection
+    # 3. Define Algorithm
     common_params = dict(
         policy="MlpPolicy",
         env=env,
         verbose=1,
-        tensorboard_log=f"runs/{run.id}"
+        tensorboard_log=f"runs/{run.id}",
+        policy_kwargs=policy_kwargs,
     )
 
     if ALGO == "TQC":
         model = TQC(
             **common_params,
-            top_quantiles_to_drop_per_net=2,  # <--- The TQC Magic Parameter
+            top_quantiles_to_drop_per_net=2,
             learning_rate=3e-4,
             batch_size=batch_size,
             buffer_size=buffer_size,
-            train_freq=1,
-            gradient_steps=1,
+            train_freq=(100, "step"),
+            gradient_steps=200,
             ent_coef="auto",
         )
     elif ALGO == "CrossQ":
@@ -153,7 +151,7 @@ def train_agent():
             "MlpPolicy",
             env,
             verbose=1,
-            learning_rate=1e-3,  # CrossQ likes higher learning rates
+            learning_rate=1e-3,
             batch_size=256,
             buffer_size=1_000_000,
             ent_coef="auto",
@@ -161,7 +159,7 @@ def train_agent():
     elif ALGO == "SAC":
         model = SAC(
             **common_params,
-            learning_rate=5e-5,
+            learning_rate=3e-4,  # Standard SAC LR
             batch_size=batch_size,
             buffer_size=buffer_size,
             train_freq=1,
@@ -169,25 +167,29 @@ def train_agent():
             ent_coef="auto",
         )
     elif ALGO == "PPO":
-        # PPO is On-Policy: No buffer_size, different batch logic
         model = PPO(
             **common_params,
             learning_rate=3e-4,
-            n_steps=2048,  # Steps to run before update
-            batch_size=64,  # Minibatch size
+            n_steps=2048,
+            batch_size=64,
             ent_coef=0.01,
         )
     else:
         raise ValueError(f"Unknown Algorithm: {ALGO}")
 
-    # 5. Callbacks
+    # 4. Callbacks
     raw_reward_callback = RawRewardCallback()
     wandb_callback = WandbCallback(gradient_save_freq=100, verbose=2)
-    checkpoint_callback = CheckpointCallback(save_freq=20000, save_path=f"./models/{run.id}")
+
+    # --- REPLACED CheckpointCallback WITH CheckpointWithStatsCallback ---
+    checkpoint_callback = CheckpointWithStatsCallback(
+        save_freq=20000,
+        save_path=f"./models/{run.id}",
+        name_prefix="rl_model"
+    )
 
     callback_group = CallbackList([
         raw_reward_callback,
-        # video_callback,
         wandb_callback,
         checkpoint_callback
     ])
@@ -200,16 +202,16 @@ def train_agent():
         callback=callback_group,
     )
 
-    # 6. Save
+    # 5. Final Save
     model.save(f"../models/{ALGO.lower()}_so101_{TASK}")
     env.save(f"../models/vec_normalize_{TASK}.pkl")
-    print("✅ Model saved.")
+    print("✅ Final Model & Stats saved.")
 
     run.finish()
     env.close()
 
 
-def evaluate(episodes=3, find_best=False):
+def evaluate(best_reward, episodes=3, find_best=False):
     print(f"\n--- 4. Evaluating Agent: {TASK} ({ALGO}) ---")
 
     # 1. Load Env
@@ -225,11 +227,14 @@ def evaluate(episodes=3, find_best=False):
         env.norm_reward = False
         print("Loaded Normalization Stats.")
     else:
+        print("⚠️ Warning: No normalization stats found. Evaluation might be broken.")
         env = env_
 
     # 3. Load Correct Model Class
     if ALGO == "TQC":
         ModelClass = TQC
+    elif ALGO == "CrossQ":
+        ModelClass = CrossQ
     elif ALGO == "SAC":
         ModelClass = SAC
     elif ALGO == "PPO":
@@ -270,7 +275,7 @@ def evaluate(episodes=3, find_best=False):
                 frames.append(frame)
                 if dones[0]: break
 
-            if total_reward > 550.0:
+            if total_reward > best_reward:
                 print(f"Saving {video_path}...")
                 imageio.mimsave(video_path, frames, fps=30)
                 num_good_eps += 1
@@ -284,4 +289,4 @@ if __name__ == "__main__":
     if not EVAL:
         train_agent()
     else:
-        evaluate(find_best=True)
+        evaluate(best_reward=REWARD_THRESHOLD, find_best=True)

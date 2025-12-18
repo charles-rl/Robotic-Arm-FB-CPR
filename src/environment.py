@@ -142,7 +142,8 @@ class RobotArmEnv(gymnasium.Env):
             0.0,
             self.joint_min[-1],  # Close gripper
         ], dtype=np.float32)
-
+        # TODO: Double check boundaries for mocap
+        # TODO: Double check rewards if it is true
         self.cube_start_positions = [
             [-0.25, 0.00, 0.43],  # 1. Center
             [-0.25, 0.15, 0.43],  # 2. Left
@@ -151,8 +152,8 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
         self.action_scale = np.pi / 20.0
-        self.ee_pos_scale = 0.02
-        self.ee_rot_scale = np.pi / 30.0
+        self.ee_pos_scale = 0.001
+        self.ee_rot_scale = np.pi / 300.0
         self.delta_quat = np.zeros(4)
         self.rot6d_mat_obs = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
