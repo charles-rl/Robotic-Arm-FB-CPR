@@ -2,8 +2,11 @@ import numpy as np
 import gymnasium
 import mujoco
 import mujoco.viewer
+import mink
+from scipy.spatial.transform import Rotation as R
 
 class RobotArmEnv(gymnasium.Env):
+    max_iters = 3 # tiny changes per timestep
     FRAME_SKIP = 17
     def __init__(self, render_mode=None, reward_type=None, task="base", control_mode="delta_joint_position"):
         """
@@ -94,9 +97,22 @@ class RobotArmEnv(gymnasium.Env):
             sparse
             dense
         """
+        print(f"Environment Initialized with {render_mode}, {reward_type}, {task}, {control_mode}")
         self.renderer = None
         self.model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
         self.data = mujoco.MjData(self.model)
+        self.configuration = mink.Configuration(self.model)
+        self.end_effector_task = mink.FrameTask(
+            frame_name="gripperframe",
+            frame_type="site",
+            position_cost=1.0,
+            orientation_cost=0.05,
+            lm_damping=1e-6,
+        )
+        self.posture_task = mink.PostureTask(self.model, cost=1e-2)
+        self.mink_tasks = [self.end_effector_task, self.posture_task]
+        self.limits = [mink.ConfigurationLimit(model=self.configuration.model)]
+        self.mocap_id = self.model.body("target").mocapid[0]
         self.viewer = None
         self.task = task
         self.reward_type = reward_type
@@ -135,7 +151,10 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
         self.action_scale = np.pi / 20.0
-        self.rot6d_mat = np.zeros(9)
+        self.ee_pos_scale = 0.02
+        self.ee_rot_scale = np.pi / 30.0
+        self.delta_quat = np.zeros(4)
+        self.rot6d_mat_obs = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
         self.base_pos_world = None
         self.timesteps = 0
@@ -146,6 +165,9 @@ class RobotArmEnv(gymnasium.Env):
         # Task specific states included
         if self.task != "base":
             obs_dims += 8
+        if self.control_mode == 1:
+            # 3 pos + 3d rotation + 1 gripper
+            actions_dims = 7
 
         if self.task == "reach":
             actions_dims -= 1
@@ -167,8 +189,8 @@ class RobotArmEnv(gymnasium.Env):
 
         # Orientation -> Rotate6D (6 dims)
         quat = self.data.xquat[body_id]
-        mujoco.mju_quat2Mat(self.rot6d_mat, quat)
-        rot6d = self.rot6d_mat[self.rot6d_idxs].copy()
+        mujoco.mju_quat2Mat(self.rot6d_mat_obs, quat)
+        rot6d = self.rot6d_mat_obs[self.rot6d_idxs].copy()
 
         # Velocity (6 dims)
         # data.cvel returns 6D spatial velocity: [Angular(3), Linear(3)]
@@ -353,15 +375,53 @@ class RobotArmEnv(gymnasium.Env):
             target_arm_ctrl = np.clip(target_arm_ctrl, self.joint_min[:5], self.joint_max[:5])
 
             self.data.ctrl[:5] = target_arm_ctrl
+        elif self.control_mode == 1:
+            # Sync configuration with current physical state
+            self.configuration.update(self.data.qpos)
+            current_mocap_pos = self.data.mocap_pos[self.mocap_id].copy()
+            new_mocap_pos = current_mocap_pos + (action[:3] * self.ee_pos_scale)
 
-            if self.task == "reach":
-                self.data.ctrl[-1] = self.joint_min[-1] # permanently closed
-            else:
-                gripper_action = action[5]
-                if gripper_action > 0:
-                    self.data.ctrl[5] = self.joint_max[5]  # Open
-                else:
-                    self.data.ctrl[5] = self.joint_min[5]  # Closed
+            new_mocap_pos[0] = np.clip(new_mocap_pos[0], -0.6 + self.base_pos_world[0], 0.6 + self.base_pos_world[0])  # X
+            new_mocap_pos[1] = np.clip(new_mocap_pos[1], -0.6 + self.base_pos_world[1], 0.6 + self.base_pos_world[1])  # Y
+            new_mocap_pos[2] = np.clip(new_mocap_pos[2], 0.0 + self.base_pos_world[2], 0.6 + self.base_pos_world[2])
+
+            self.data.mocap_pos[self.mocap_id] = new_mocap_pos
+
+            current_quat = self.data.mocap_quat[self.mocap_id].copy()
+            quat = self._apply_delta_orientation(current_quat, action[3:6])
+            self.data.mocap_quat[self.mocap_id] = quat
+
+            T_wt = mink.SE3.from_mocap_name(self.model, self.data, "target")
+            self.end_effector_task.set_target(T_wt)
+
+            dt_solver = 0.002 * self.FRAME_SKIP
+            for i in range(self.max_iters):
+                vel = mink.solve_ik(
+                    self.configuration,
+                    self.mink_tasks,
+                    dt_solver,
+                    solver="daqp",
+                    limits=self.limits
+                )
+                self.configuration.integrate_inplace(vel, dt_solver)
+                # Removed this for speed and less overhead
+                # err = self.end_effector_task.compute_error(self.configuration)
+                # pos_achieved = np.linalg.norm(err[:3]) <= 1e-3
+                # ori_achieved = np.linalg.norm(err[3:]) <= 1e-4
+                # if pos_achieved and ori_achieved:
+                #     break
+            self.data.ctrl[:5] = self.configuration.q[:5]
+
+        if self.task == "reach":
+            self.data.ctrl[5] = self.joint_min[5]  # Permanently closed
+        else:
+            gripper_action = action[-1]
+
+            if gripper_action > 0.1:
+                self.data.ctrl[5] = self.joint_max[5]  # Open
+            elif gripper_action < -0.1:
+                self.data.ctrl[5] = self.joint_min[5]  # Closed
+            # If between -0.1 and 0.1, keep previous state (do nothing)
 
         for _ in range(self.FRAME_SKIP):
             mujoco.mj_step(self.model, self.data)
@@ -373,6 +433,31 @@ class RobotArmEnv(gymnasium.Env):
         reward = self._compute_reward()
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
+
+    def _apply_delta_orientation(self, current_quat, euler_action):
+        """
+        Applies a local delta Euler rotation to the current quaternion.
+        """
+        scaled_action = euler_action * self.ee_rot_scale
+        mujoco.mju_euler2Quat(self.delta_quat, scaled_action, "xyz")
+
+        # 2. Multiply: New = Old * Delta (Local Rotation)
+        # To do Local Rotation: current * delta
+        # To do Global Rotation: delta * current
+        new_quat = np.zeros(4)
+        mujoco.mju_mulQuat(new_quat, current_quat, self.delta_quat)
+        return new_quat
+
+    def _rot6d_to_mat_quat(self, rot6d):
+        """Unused because I have decided to use delta euler angles"""
+        a1, a2 = rot6d[:3], rot6d[3:]
+        x = a1 / (np.linalg.norm(a1) + 1e-8)
+        z = np.cross(x, a2)
+        z = z / (np.linalg.norm(z) + 1e-8)
+        y = np.cross(z, x)
+        mat = np.stack([x, y, z], axis=1)
+        mujoco.mju_mat2Quat(self.quat_action, mat.flatten())
+        return mat
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -410,7 +495,10 @@ class RobotArmEnv(gymnasium.Env):
         self.data.qpos[adr_b + 3: adr_b + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
 
         # Update Kinematics
+        self.configuration.update(self.data.qpos)
         mujoco.mj_forward(self.model, self.data)
+        self.posture_task.set_target_from_configuration(self.configuration)
+        mink.move_mocap_to_frame(self.model, self.data, "target", "gripperframe", "site")
 
         # Settle Physics
         for _ in range(10):
@@ -538,12 +626,71 @@ class RobotArmEnv(gymnasium.Env):
 
 
 if __name__ == "__main__":
-    env = RobotArmEnv(render_mode="human", task="lift")
-    obs, info = env.reset(seed=0)
-    done = False
-    while not done:
-        action = np.zeros(env.action_space.shape[0])
-        obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        env.render()
-    env.close()
+    end_effector_testing = False
+    if not end_effector_testing:
+        env = RobotArmEnv(render_mode="human", task="lift", control_mode="delta_end_effector")
+        obs, info = env.reset(seed=0)
+        done = False
+        while not done:
+            action = np.zeros(env.action_space.shape[0])
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            env.render()
+        env.close()
+
+    else:
+        import time
+
+        # Initialize with human rendering to see what's happening
+        env = RobotArmEnv(render_mode="human", task="lift", control_mode="delta_end_effector")
+        obs, info = env.reset(seed=42)
+
+        print("=== STARTING ACTION TEST ===")
+
+
+        def run_sequence(action_vec, steps, description):
+            print(f"Testing: {description}")
+            for _ in range(steps):
+                obs, reward, terminated, truncated, info = env.step(action_vec)
+                env.render()
+                # Sleep slightly to make visual debugging easier (remove for real training)
+                time.sleep(0.1)
+
+                # Action definition: [dx, dy, dz, d_roll, d_pitch, d_yaw, gripper]
+
+
+        # 1. Test Z-Axis (Up/Down)
+        # Move Up
+        run_sequence(np.array([0, 0, 1.0, 0, 0, 0, 1.0]), 20, "Moving UP")
+        # Move Down
+        run_sequence(np.array([0, 0, -1.0, 0, 0, 0, 1.0]), 20, "Moving DOWN")
+
+        # 2. Test Y-Axis (Left/Right)
+        # Move Left (positive Y usually)
+        run_sequence(np.array([0, 1.0, 0, 0, 0, 0, 1.0]), 20, "Moving LEFT")
+        # Move Right
+        run_sequence(np.array([0, -1.0, 0, 0, 0, 0, 1.0]), 20, "Moving RIGHT")
+
+        # 3. Test X-Axis (Forward/Back)
+        # Move Forward
+        run_sequence(np.array([1.0, 0, 0, 0, 0, 0, 1.0]), 20, "Moving FORWARD")
+        # Move Backward
+        run_sequence(np.array([-1.0, 0, 0, 0, 0, 0, 1.0]), 20, "Moving BACKWARD")
+
+        # 4. Test Orientation (Wrist)
+        # Roll
+        run_sequence(np.array([0, 0, 0, 1.0, 0, 0, 1.0]), 30, "Rolling Wrist (+)")
+        run_sequence(np.array([0, 0, 0, -1.0, 0, 0, 1.0]), 30, "Rolling Wrist (-)")
+
+        # Pitch (Up/Down Tilt)
+        run_sequence(np.array([0, 0, 0, 0, 1.0, 0, 1.0]), 30, "Pitching Wrist (+)")
+        run_sequence(np.array([0, 0, 0, 0, -1.0, 0, 1.0]), 30, "Pitching Wrist (-)")
+
+        # 5. Test Gripper
+        # Close
+        run_sequence(np.array([0, 0, 0, 0, 0, 0, -1.0]), 30, "Closing Gripper")
+        # Open
+        run_sequence(np.array([0, 0, 0, 0, 0, 0, 1.0]), 30, "Opening Gripper")
+
+        print("=== TEST COMPLETE ===")
+        env.close()

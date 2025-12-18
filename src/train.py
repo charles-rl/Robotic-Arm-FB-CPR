@@ -20,6 +20,7 @@ DEBUG = False
 EVAL = False
 TASK = "lift"
 RUN_NAME = f"SAC"
+CONTROL_MODE = "delta_end_effector"  # other one is delta_joint_position
 
 
 class RawRewardCallback(BaseCallback):
@@ -99,7 +100,7 @@ class VideoRecorderCallback(BaseCallback):
 
 def test_environment_structure():
     print("--- 1. Checking Environment Compliance ---")
-    env = RobotArmEnv(reward_type="dense", task=TASK)
+    env = RobotArmEnv(reward_type="dense", task=TASK, control_mode=CONTROL_MODE)
     try:
         check_env(env)
         print("✅ Environment passed Gymnasium checks!")
@@ -137,7 +138,7 @@ def train_agent():
     )
 
     # 2. Create Training Env (No Render, optimized for speed)
-    env = DummyVecEnv([lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK))])
+    env = DummyVecEnv([lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
     env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., clip_reward=100.)
 
     # 3. Create Evaluation/Video Env (With Render)
@@ -198,7 +199,7 @@ def evaluate(episodes=3, find_best=False):
     print(f"\n--- 4. Evaluating Agent: {TASK} ---")
 
     # 1. Load Env
-    env_ = DummyVecEnv([lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK)])
+    env_ = DummyVecEnv([lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
 
     # 2. Access inner max_episode_steps correctly
     # DummyVecEnv wraps the env in a list. We access attributes via get_attr

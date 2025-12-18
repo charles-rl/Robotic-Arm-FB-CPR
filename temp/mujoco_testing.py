@@ -242,15 +242,15 @@ def action_joints_open_space():
             # Get the current angles of JUST the robot arm
             current_robot_qpos = data.qpos[:n_actuators]
             if keys[pygame.K_e]:
-                current_robot_qpos[4] += 0.005
+                current_robot_qpos[4] += 0.008
             if keys[pygame.K_q]:
-                current_robot_qpos[4] -= 0.005
+                current_robot_qpos[4] -= 0.008
 
             # Joint 6 Control
             if keys[pygame.K_1]:
-                current_robot_qpos[5] += 0.005
+                current_robot_qpos[5] += 0.008
             if keys[pygame.K_2]:
-                current_robot_qpos[5] -= 0.005
+                current_robot_qpos[5] -= 0.008
 
             # Get the calculated velocity for JUST the robot arm
             robot_dq = dq[:n_actuators]
