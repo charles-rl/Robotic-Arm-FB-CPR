@@ -21,8 +21,8 @@ DEBUG = True
 EVAL = True
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
-CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
-REWARD_THRESHOLD = 280.0
+CONTROL_MODE = "delta_joint_position"  # delta_end_effector delta_joint_position
+REWARD_THRESHOLD = 200.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
 

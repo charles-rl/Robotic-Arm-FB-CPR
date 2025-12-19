@@ -83,7 +83,7 @@
 <!--            <site name="cube_b" pos="0 0 0" size="0.02 0.02 0.02" rgba="0 1 0 1" type="sphere"/>-->
 <!--        </body>-->
 
-        <body name="cube_b" pos="-0.25 0 0.45">
+        <body name="cube_b" pos="-0.1 0 0.45">
             <joint name="cube_b_joint" type="free" frictionloss="0.01"/>
             <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002"/>
             <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.012 0.012 0.012" type="box" name="cube_b" material="mat_cube_b"/>

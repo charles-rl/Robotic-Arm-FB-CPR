@@ -5,8 +5,41 @@ import mujoco.viewer
 import mink
 from scipy.spatial.transform import Rotation as R
 
+POSITIONS = {
+    "Center": {
+        "air_pos": [-0.25, 0.0, 0.63],
+        "air_qpos": np.array([-0.0256, -1.6549, 1.0216, 0.5479, -1.5147, 0.4505]),
+        "table_pos": [-0.25, 0.0, 0.43],
+        "table_qpos": np.array([-0.1105, -0.6478, 1.2145, 0.6488, -1.5149, 0.7772])
+    },
+    "Left": {
+        "air_pos": [-0.25, 0.15, 0.63],
+        "air_qpos": np.array([-0.7104, -0.9144, 0.7525, 0.2296, 1.6324, 0.4714]),
+        "table_pos": [-0.25, 0.15, 0.43],
+        "table_qpos": np.array([-0.8048, -0.1693, 0.9395, 0.2268, -1.6803, 0.4066])
+    },
+    "Right": {
+        "air_pos": [-0.25, -0.15, 0.63],
+        "air_qpos": np.array([0.7957, -0.9497, 0.8520, 0.0732, 1.5838, 0.4697]),
+        "table_pos": [-0.25, -0.15, 0.43],
+        "table_qpos": np.array([0.8181, -0.1458, 0.9392, 0.1610, 1.6450, 0.5912])
+    },
+    "Far_Left": {
+        "air_pos": [-0.1, 0.1, 0.63],
+        "air_qpos": np.array([-0.2480, 0.0105, 0.0497, -0.0548, 1.6172, 0.6541]),
+        "table_pos": [-0.1, 0.1, 0.43],
+        "table_qpos": np.array([0.3376, 0.9439, -0.8526, 1.0503, 1.7712, 0.4501])
+    },
+    "Far_Right": {
+        "air_pos": [-0.1, -0.1, 0.63],
+        "air_qpos": np.array([0.2271, -0.0655, 0.1389, -0.0051, -1.5699, 0.6396]),
+        "table_pos": [-0.1, -0.1, 0.43],
+        "table_qpos": np.array([0.2556, 0.8585, 0.2434, -0.8558, -1.5711, 0.7101])
+    },
+}
+
 class RobotArmEnv(gymnasium.Env):
-    max_iters = 3 # tiny changes per timestep
+    max_iters = 2 # tiny changes per timestep
     FRAME_SKIP = 17
     def __init__(self, render_mode=None, reward_type=None, task="base", control_mode="delta_joint_position"):
         """
@@ -143,6 +176,7 @@ class RobotArmEnv(gymnasium.Env):
             self.joint_min[-1],  # Close gripper
         ], dtype=np.float32)
         # TODO: Double check rewards if it is true
+        # TODO: Rescale the positions here to fit according to base pos
         self.cube_start_positions = [
             [-0.25, 0.00, 0.43],  # 1. Center
             [-0.25, 0.15, 0.43],  # 2. Left
@@ -150,6 +184,7 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, 0.10, 0.43],  # 4. Far Left
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
+        self.cube_neutral_start_position = [-0.1, 0.00, 0.43]
         self.action_scale = np.pi / 20.0
         self.ee_pos_scale = 0.01
         self.ee_rot_scale = np.pi / 150.0
@@ -455,43 +490,78 @@ class RobotArmEnv(gymnasium.Env):
         mujoco.mju_mat2Quat(self.quat_action, mat.flatten())
         return mat
 
+    def _set_cube_pos_quat(self, cube_joint_name, pos, quat):
+        cube_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, cube_joint_name)
+        adr = self.model.jnt_qposadr[cube_id]
+        self.data.qpos[adr: adr + 3] = pos
+        self.data.qpos[adr + 3: adr + 7] = quat
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
         mujoco.mj_resetData(self.model, self.data)
-
-        n_joints = len(self.joint_names)
-        self.data.qpos[:n_joints] = self._arm_start_pos
-        self.data.qvel[:n_joints] = 0.0  # no arm movement
-
-        # Set the actuators to the same position as well
-        self.data.ctrl[:6] = self.data.qpos[:6].copy()
-
-        # Choose cube start position
+        # ========================================================================
         chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
-        pos_a = self.cube_start_positions[chosen_indices[0]]
-        pos_b = self.cube_start_positions[chosen_indices[1]]
-        pos_a = self.cube_start_positions[0]
-        pos_b = self.cube_start_positions[-1]
+        cube_joints = ("cube_a_joint", "cube_b_joint")
+        active_cube_idx = 0 if np.random.rand() > 0.5 else 1
+        other_cube_idx = 1 - active_cube_idx
+        self.object_focus_idx = active_cube_idx
+        self.object_focus_one_hot = np.zeros(2)
+        self.object_focus_one_hot[self.object_focus_idx] = 1.0
 
-        # Set Cube A
-        cube_a_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_a_joint")
-        adr_a = self.model.jnt_qposadr[cube_a_id]
-        self.data.qpos[adr_a: adr_a + 3] = pos_a
-        # Set Orientation [w, x, y, z] - Identity Quaternion (No rotation)
-        # self.data.qpos[adr_a + 3: adr_a + 7] = [1, 0, 0, 0]
-        # Randomize Orientation
-        theta = np.random.uniform(-np.pi, np.pi)
-        self.data.qpos[adr_a + 3: adr_a + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+        active_cube_name = cube_joints[active_cube_idx]
+        other_cube_name = cube_joints[other_cube_idx]
+        stage_roll = np.random.rand()
 
-        # Set Cube B2
-        cube_b_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_b_joint")
-        adr_b = self.model.jnt_qposadr[cube_b_id]
-        self.data.qpos[adr_b: adr_b + 3] = pos_b
-        # self.data.qpos[adr_b + 3: adr_b + 7] = [1, 0, 0, 0]
-        theta = np.random.uniform(-np.pi, np.pi)
-        self.data.qpos[adr_b + 3: adr_b + 7] = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+        loc_name = np.random.choice(list(POSITIONS.keys()))
+        loc_data = POSITIONS[loc_name]
 
+        if stage_roll < 1.0:
+            self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
+            self._set_cube_pos_quat(active_cube_name, loc_data["air_pos"], np.array([1, 0, 0, 0]))
+
+            qpos = loc_data["air_qpos"].copy()
+            self.data.qpos[:6] = qpos
+            self.data.qvel[:6] = 0.0
+            self.data.ctrl[:6] = qpos
+            self.data.ctrl[5] = self.joint_min[5]  # auto close
+            self.dynamic_goal_pos = np.array(loc_data["air_pos"])
+
+        elif stage_roll < 0.8:
+            self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
+            self._set_cube_pos_quat(active_cube_name, loc_data["table_pos"], np.array([1, 0, 0, 0]))
+
+            qpos = loc_data["table_qpos"].copy()
+            self.data.qpos[:6] = qpos
+            self.data.qvel[:6] = 0.0
+            self.data.ctrl[:6] = qpos
+            self.data.ctrl[5] = self.joint_max[5] # open
+            self.dynamic_goal_pos = np.array(loc_data["air_pos"])
+        else:
+            pos_a = self.cube_start_positions[chosen_indices[0]]
+            pos_b = self.cube_start_positions[chosen_indices[1]]
+
+            # Set Cube A
+            # Randomize Orientation
+            theta = np.random.uniform(-np.pi, np.pi)
+            quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            self._set_cube_pos_quat("cube_a_joint", pos_a, quat_a)
+            # Set Orientation [w, x, y, z] - Identity Quaternion (No rotation)
+            # self.data.qpos[adr_a + 3: adr_a + 7] = [1, 0, 0, 0]
+
+            # Set Cube B2
+            theta = np.random.uniform(-np.pi, np.pi)
+            quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            self._set_cube_pos_quat("cube_b_joint", pos_b, quat_b)
+            # self.data.qpos[adr_b + 3: adr_b + 7] = [1, 0, 0, 0]
+
+            self.data.qpos[:6] = self._arm_start_pos
+            self.data.qvel[:6] = 0.0  # no arm movement
+            self.data.ctrl[:6] = self.data.qpos[:6].copy()
+
+            self._sample_target()
+
+        # ========================================================================
         # Update Kinematics
         self.configuration.update(self.data.qpos)
         mujoco.mj_forward(self.model, self.data)
@@ -504,15 +574,10 @@ class RobotArmEnv(gymnasium.Env):
 
         self.base_pos_world = self.data.body("base").xpos
 
-        self.object_focus_idx = np.random.randint(0, 2)
-        self.object_focus_one_hot = np.zeros(2)
-        self.object_focus_one_hot[self.object_focus_idx] = 1.0
-
         target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
         target_cube_pos = self.data.xpos[target_cube_id].copy()
         self.object_start_height = target_cube_pos[2]
 
-        self._sample_target()
         self.timesteps = 0
         return self._get_obs(), self._get_info()
 
