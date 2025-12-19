@@ -17,12 +17,12 @@ from stable_baselines3.common.monitor import Monitor
 from environment import RobotArmEnv
 
 # Configuration
-DEBUG = True
-EVAL = True
+DEBUG = False
+EVAL = False
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
-CONTROL_MODE = "delta_joint_position"  # delta_end_effector delta_joint_position
-REWARD_THRESHOLD = 200.0
+CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
+REWARD_THRESHOLD = 100.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
 
@@ -289,4 +289,4 @@ if __name__ == "__main__":
     if not EVAL:
         train_agent()
     else:
-        evaluate(best_reward=REWARD_THRESHOLD, find_best=True)
+        evaluate(best_reward=REWARD_THRESHOLD, find_best=False)

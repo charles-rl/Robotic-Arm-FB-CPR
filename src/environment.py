@@ -363,7 +363,7 @@ class RobotArmEnv(gymnasium.Env):
             is_lifted = dist_from_table > 0.05
 
             dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
-            is_goal = dist_z < 0.05
+            is_goal = dist_z < 0.08
 
             if self.reward_type == "sparse":
                 reward = 0.0
@@ -398,7 +398,12 @@ class RobotArmEnv(gymnasium.Env):
                 # Total Sum
                 # We multiply continuous_grasp_reward by 0.5 so it doesn't overpower the reach
                 # but the grasp_bonus (2.0) is the main driver.
-                return reach_reward + (continuous_grasp_reward * 0.5) + grasp_bonus + hoist_reward + precision_reward
+                # return reach_reward + (continuous_grasp_reward * 0.5) + grasp_bonus + hoist_reward + precision_reward
+                if is_goal:
+                    hoist_reward = 1.0
+                else:
+                    hoist_reward = np.tanh(20.0 * dist_from_table)
+                return precision_reward + hoist_reward
 
         return 0.0
 
@@ -516,7 +521,7 @@ class RobotArmEnv(gymnasium.Env):
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
 
-        if stage_roll < 1.0:
+        if stage_roll < 0.3:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["air_pos"], np.array([1, 0, 0, 0]))
 
