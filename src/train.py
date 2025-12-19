@@ -17,12 +17,12 @@ from stable_baselines3.common.monitor import Monitor
 from environment import RobotArmEnv
 
 # Configuration
-DEBUG = False
-EVAL = False
+DEBUG = True
+EVAL = True
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
 CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
-REWARD_THRESHOLD = 250.0
+REWARD_THRESHOLD = 280.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
 
@@ -122,8 +122,8 @@ def train_agent():
     if ALGO == "TQC":
         policy_kwargs = dict(
             use_sde=True,  # <--- 1. ENABLE gSDE (Smooth Exploration)
-            log_std_init=-3,  # Start with smaller, more precise exploration
-            net_arch=[400, 300],  # Standard architecture
+            log_std_init=-2,  # Start with smaller, more precise exploration
+            net_arch=[256, 256],  # Standard architecture
         )
 
     # 3. Define Algorithm

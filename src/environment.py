@@ -139,10 +139,9 @@ class RobotArmEnv(gymnasium.Env):
             self.joint_min[1],
             self.joint_max[2],
             np.random.uniform(0.4, 0.6),
-            0.0,
+            np.pi / 2,
             self.joint_min[-1],  # Close gripper
         ], dtype=np.float32)
-        # TODO: Double check boundaries for mocap
         # TODO: Double check rewards if it is true
         self.cube_start_positions = [
             [-0.25, 0.00, 0.43],  # 1. Center
@@ -152,8 +151,8 @@ class RobotArmEnv(gymnasium.Env):
             [-0.10, -0.10, 0.43],  # 5. Far Right
         ]
         self.action_scale = np.pi / 20.0
-        self.ee_pos_scale = 0.001
-        self.ee_rot_scale = np.pi / 300.0
+        self.ee_pos_scale = 0.01
+        self.ee_rot_scale = np.pi / 150.0
         self.delta_quat = np.zeros(4)
         self.rot6d_mat_obs = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
@@ -379,16 +378,16 @@ class RobotArmEnv(gymnasium.Env):
         elif self.control_mode == 1:
             # Sync configuration with current physical state
             self.configuration.update(self.data.qpos)
-            current_mocap_pos = self.data.mocap_pos[self.mocap_id].copy()
-            new_mocap_pos = current_mocap_pos + (action[:3] * self.ee_pos_scale)
-
+            current_ee_pos = self.data.site("gripperframe").xpos.copy()
+            new_mocap_pos = current_ee_pos + (action[:3] * self.ee_pos_scale)
             new_mocap_pos[0] = np.clip(new_mocap_pos[0], -0.6 + self.base_pos_world[0], 0.6 + self.base_pos_world[0])  # X
             new_mocap_pos[1] = np.clip(new_mocap_pos[1], -0.6 + self.base_pos_world[1], 0.6 + self.base_pos_world[1])  # Y
-            new_mocap_pos[2] = np.clip(new_mocap_pos[2], 0.0 + self.base_pos_world[2], 0.6 + self.base_pos_world[2])
-
+            new_mocap_pos[2] = np.clip(new_mocap_pos[2], -0.02 + self.base_pos_world[2], 0.6 + self.base_pos_world[2])
             self.data.mocap_pos[self.mocap_id] = new_mocap_pos
 
-            current_quat = self.data.mocap_quat[self.mocap_id].copy()
+            current_xmat = self.data.site("gripperframe").xmat.copy()
+            current_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(current_quat, current_xmat)
             quat = self._apply_delta_orientation(current_quat, action[3:6])
             self.data.mocap_quat[self.mocap_id] = quat
 
@@ -441,10 +440,6 @@ class RobotArmEnv(gymnasium.Env):
         """
         scaled_action = euler_action * self.ee_rot_scale
         mujoco.mju_euler2Quat(self.delta_quat, scaled_action, "xyz")
-
-        # 2. Multiply: New = Old * Delta (Local Rotation)
-        # To do Local Rotation: current * delta
-        # To do Global Rotation: delta * current
         new_quat = np.zeros(4)
         mujoco.mju_mulQuat(new_quat, current_quat, self.delta_quat)
         return new_quat
@@ -476,6 +471,8 @@ class RobotArmEnv(gymnasium.Env):
         chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
         pos_a = self.cube_start_positions[chosen_indices[0]]
         pos_b = self.cube_start_positions[chosen_indices[1]]
+        pos_a = self.cube_start_positions[0]
+        pos_b = self.cube_start_positions[-1]
 
         # Set Cube A
         cube_a_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_a_joint")
@@ -680,12 +677,12 @@ if __name__ == "__main__":
 
         # 4. Test Orientation (Wrist)
         # Roll
-        run_sequence(np.array([0, 0, 0, 1.0, 0, 0, 1.0]), 30, "Rolling Wrist (+)")
-        run_sequence(np.array([0, 0, 0, -1.0, 0, 0, 1.0]), 30, "Rolling Wrist (-)")
+        run_sequence(np.array([0, 0, 0, 1.0, 0, 0, 1.0]), 60, "Rolling Wrist (+)")
+        run_sequence(np.array([0, 0, 0, -1.0, 0, 0, 1.0]), 60, "Rolling Wrist (-)")
 
         # Pitch (Up/Down Tilt)
-        run_sequence(np.array([0, 0, 0, 0, 1.0, 0, 1.0]), 30, "Pitching Wrist (+)")
-        run_sequence(np.array([0, 0, 0, 0, -1.0, 0, 1.0]), 30, "Pitching Wrist (-)")
+        run_sequence(np.array([0, 0, 0, 0, 1.0, 0, 1.0]), 60, "Pitching Wrist (+)")
+        run_sequence(np.array([0, 0, 0, 0, -1.0, 0, 1.0]), 60, "Pitching Wrist (-)")
 
         # 5. Test Gripper
         # Close
