@@ -41,8 +41,8 @@ Cube Position (Air): [-0.25, -0.15, 0.43]
 perfect_grasp_qpos = np.array([0.8181, -0.1458, 0.9392, 0.1610, 1.6450, 0.5912])
 
 Far Left
-Cube Position (Air): [-0.1, -0.1, 0.43]
-perfect_grasp_qpos = np.array([0.3376, 0.9439, -0.8526, 1.0503, 1.7712, 0.4501])
+Cube Position (Air): [-0.1, 0.1, 0.43]
+perfect_grasp_qpos = np.array([-0.3462, 0.7594, 0.3037, -0.7716, -1.6587, 0.5156])
 
 Far Right
 Cube Position (Table): [-0.1, -0.1, 0.43]

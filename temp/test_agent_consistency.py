@@ -119,5 +119,5 @@ if __name__ == "__main__":
     test_consistency(
         model_path=f"../models/{ALGO.lower()}_so101_{TASK}",
         stats_path=f"../models/vec_normalize_{TASK}.pkl",
-        n_episodes=10
+        n_episodes=50
     )

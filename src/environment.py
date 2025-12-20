@@ -28,7 +28,7 @@ POSITIONS = {
         "air_pos": [-0.1, 0.1, 0.63],
         "air_qpos": np.array([-0.2480, 0.0105, 0.0497, -0.0548, 1.6172, 0.6541]),
         "table_pos": [-0.1, 0.1, 0.43],
-        "table_qpos": np.array([0.3376, 0.9439, -0.8526, 1.0503, 1.7712, 0.4501])
+        "table_qpos": np.array([-0.3462, 0.7594, 0.3037, -0.7716, -1.6587, 0.5156])
     },
     "Far_Right": {
         "air_pos": [-0.1, -0.1, 0.63],
@@ -165,6 +165,7 @@ class RobotArmEnv(gymnasium.Env):
         control_modes = ("delta_joint_position", "delta_end_effector")
         self.control_mode = control_modes.index(control_mode)
         self.render_mode = render_mode
+        self.total_episodes = 0
 
         # Initialize positions - will be set randomly in reset()
         self._arm_start_pos = np.array([
@@ -360,11 +361,11 @@ class RobotArmEnv(gymnasium.Env):
                 return reward
 
             elif self.reward_type == "dense":
-                reach_reward = 1.0 - np.tanh(5.0 * dist_ee_cube)
-                hoist_reward = np.tanh(5.0 * dist_from_table)
+                reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
+                hoist_reward = np.tanh(7.0 * dist_from_table)
 
                 dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                precision_reward = 1.0 - np.tanh(5.0 * dist_to_goal)
+                precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
                 if dist_to_goal < 0.05:
                     precision_reward += 2.0
 
@@ -503,7 +504,14 @@ class RobotArmEnv(gymnasium.Env):
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
 
-        if stage_roll < 1.0:
+        if self.total_episodes < 150:
+            stage_probs = [0.8, 0.2, 0.0]  # 80% Hold, 20% Hoist, 0% Random
+        elif self.total_episodes < 400:
+            stage_probs = [0.2, 0.6, 0.2]
+        else:
+            stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
+
+        if stage_roll < stage_probs[0]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["air_pos"], np.array([1, 0, 0, 0]))
 
@@ -514,7 +522,7 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[5] = self.joint_min[5]  # auto close
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
 
-        elif stage_roll < 0.8:
+        elif stage_roll < stage_probs[1]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["table_pos"], np.array([1, 0, 0, 0]))
 
@@ -566,6 +574,7 @@ class RobotArmEnv(gymnasium.Env):
         self.object_start_height = target_cube_pos[2]
 
         self.timesteps = 0
+        self.total_episodes += 1
 
         if self.task != "base":
             obs, fb_obs = self._get_obs()
