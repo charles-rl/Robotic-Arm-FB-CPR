@@ -317,7 +317,7 @@ class RobotArmEnv(gymnasium.Env):
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos_world = self.data.xpos[target_cube_id].copy()
 
-            lift_height = np.random.uniform(0.15, 0.25)
+            lift_height = np.random.uniform(0.19, 0.21)
 
             self.dynamic_goal_pos = cube_pos_world.copy()
             self.dynamic_goal_pos[2] += lift_height
@@ -369,6 +369,7 @@ class RobotArmEnv(gymnasium.Env):
                 if dist_to_goal < 0.05:
                     precision_reward += 2.0
 
+                print(f"dist_from_table: {dist_from_table}\treach: {reach_reward}\tprecision: {precision_reward}\thoist: {hoist_reward}")
                 return reach_reward + precision_reward + hoist_reward
 
         return 0.0
@@ -504,10 +505,10 @@ class RobotArmEnv(gymnasium.Env):
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
 
-        if self.total_episodes < 150:
-            stage_probs = [0.8, 0.2, 0.0]  # 80% Hold, 20% Hoist, 0% Random
-        elif self.total_episodes < 400:
-            stage_probs = [0.2, 0.6, 0.2]
+        if self.total_episodes < 150:  # 30k timesteps
+            stage_probs = [0.3, 0.4, 0.3]  # 30% Hold, 40% Hoist, 30% Random
+        elif self.total_episodes < 300:  # 60k timesteps
+            stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
 
@@ -522,7 +523,7 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[5] = self.joint_min[5]  # auto close
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
 
-        elif stage_roll < stage_probs[1]:
+        elif stage_roll < stage_probs[0] + stage_probs[1]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["table_pos"], np.array([1, 0, 0, 0]))
 
@@ -569,9 +570,7 @@ class RobotArmEnv(gymnasium.Env):
 
         self.base_pos_world = self.data.body("base").xpos
 
-        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
-        target_cube_pos = self.data.xpos[target_cube_id].copy()
-        self.object_start_height = target_cube_pos[2]
+        self.object_start_height = self.base_pos_world[2] + 0.01
 
         self.timesteps = 0
         self.total_episodes += 1
