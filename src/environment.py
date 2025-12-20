@@ -187,7 +187,7 @@ class RobotArmEnv(gymnasium.Env):
         ]
         self.cube_neutral_start_position = [-0.1, 0.00, 0.43]
         self.action_scale = np.pi / 20.0
-        self.ee_pos_scale = 0.001
+        self.ee_pos_scale = 0.015
         self.ee_rot_scale = np.pi / 150.0
         self.delta_quat = np.zeros(4)
         self.rot6d_mat_obs = np.zeros(9)
@@ -322,7 +322,7 @@ class RobotArmEnv(gymnasium.Env):
             self.dynamic_goal_pos = cube_pos_world.copy()
             self.dynamic_goal_pos[2] += lift_height
 
-    def _compute_reward(self, has_fallen=False):
+    def _compute_reward(self, action, has_fallen=False):
         """
         Calculates reward based on the current task.
         SmolVLA/LeRobot Style: 0.5 for partial success, 1.0 for full success.
@@ -369,8 +369,11 @@ class RobotArmEnv(gymnasium.Env):
                 if dist_to_goal < 0.05:
                     precision_reward += 2.0
 
-                print(f"dist_from_table: {dist_from_table}\treach: {reach_reward}\tprecision: {precision_reward}\thoist: {hoist_reward}")
-                return reach_reward + precision_reward + hoist_reward
+                # Gripper not included
+                action_magnitude = np.linalg.norm(action[:5])
+                action_penalty = -0.05 * action_magnitude
+
+                return reach_reward + precision_reward + hoist_reward + action_penalty
 
         return 0.0
 
@@ -511,6 +514,7 @@ class RobotArmEnv(gymnasium.Env):
             stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
+        # stage_probs = [1.0, 0.0, 1.0]
 
         if stage_roll < stage_probs[0]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
@@ -555,8 +559,6 @@ class RobotArmEnv(gymnasium.Env):
             self.data.qvel[:6] = 0.0  # no arm movement
             self.data.ctrl[:6] = self.data.qpos[:6].copy()
 
-            self._sample_target()
-
         # ========================================================================
         # Update Kinematics
         self.configuration.update(self.data.qpos)
@@ -567,6 +569,9 @@ class RobotArmEnv(gymnasium.Env):
         # Settle Physics
         for _ in range(10):
             mujoco.mj_step(self.model, self.data)
+
+        if stage_roll >= stage_probs[0] + stage_probs[1]:
+            self._sample_target()
 
         self.base_pos_world = self.data.body("base").xpos
 
@@ -644,13 +649,13 @@ class RobotArmEnv(gymnasium.Env):
                     rgba=[1, 0, 0, 0.4]
                 )
             elif self.task == "lift":
-                color = [1, 0, 0, 0.4] if self.object_focus_idx == 0 else [0, 0, 1, 0.4]
+                color = [0.8, 0, 0, 0.3] if self.object_focus_idx == 0 else [0, 0, 0.8, 0.3]
                 # Render target position
                 mujoco.mjv_initGeom(
                     scene.geoms[0],
                     type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.02, 0, 0],  # Radius 2cm
-                    pos=self.dynamic_goal_pos,  # <--- Use the class variable
+                    size=[0.015, 0, 0],
+                    pos=self.dynamic_goal_pos,
                     mat=np.eye(3).flatten(),
                     rgba=color
                 )
