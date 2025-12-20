@@ -211,12 +211,16 @@ def train_agent():
     env.close()
 
 
-def evaluate(best_reward, episodes=3, find_best=False):
+def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False):
     print(f"\n--- 4. Evaluating Agent: {TASK} ({ALGO}) ---")
 
     # 1. Load Env
-    env_ = DummyVecEnv(
-        [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
+    if only_visualize:
+        env_ = DummyVecEnv(
+            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
+    else:
+        env_ = DummyVecEnv(
+            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
     max_steps = env_.get_attr("max_episode_steps")[0]
 
     # 2. Load Normalization Stats
@@ -253,12 +257,16 @@ def evaluate(best_reward, episodes=3, find_best=False):
             for i in range(max_steps + 10):
                 action, _ = model.predict(obs, deterministic=True)
                 obs, rewards, dones, info = env.step(action)
-                frame = env.envs[0].render()
-                frames.append(frame)
+                if only_visualize:
+                    env.envs[0].render()
+                else:
+                    frame = env.envs[0].render()
+                    frames.append(frame)
                 if dones[0]: break
 
-            print(f"Saving {video_path}...")
-            imageio.mimsave(video_path, frames, fps=30)
+            if not only_visualize:
+                print(f"Saving {video_path}...")
+                imageio.mimsave(video_path, frames, fps=30)
     else:
         num_good_eps = 0
         while num_good_eps < episodes:

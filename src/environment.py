@@ -316,7 +316,7 @@ class RobotArmEnv(gymnasium.Env):
             self.dynamic_goal_pos = cube_pos_world.copy()
             self.dynamic_goal_pos[2] += lift_height
 
-    def _compute_reward(self):
+    def _compute_reward(self, has_fallen=False):
         """
         Calculates reward based on the current task.
         SmolVLA/LeRobot Style: 0.5 for partial success, 1.0 for full success.
@@ -332,8 +332,10 @@ class RobotArmEnv(gymnasium.Env):
             elif self.reward_type == "dense":
                 return 1.0 - np.tanh(3.0 * distance)
 
-
         elif self.task == "lift":
+            if has_fallen:
+                return -10.0
+
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos = self.data.xpos[target_cube_id].copy()
 
@@ -374,36 +376,15 @@ class RobotArmEnv(gymnasium.Env):
                 return reward
 
             elif self.reward_type == "dense":
-                # A. Approach Reward (Max 1.0)
-                # Helps the robot find the cube
                 reach_reward = 1.0 - np.tanh(5.0 * dist_ee_cube)
+                hoist_reward = np.tanh(5.0 * dist_from_table)
 
-                # B. Hoist Reward (Max 1.0)
-                # Only active if we have a grip, otherwise the robot might just
-                # punch the cube into the air to get height reward.
-                if has_solid_grip:
-                    # If we are at the goal height, max this out
-                    if is_goal:
-                        hoist_reward = 1.0
-                    else:
-                        # Continuous feedback for every cm lifted
-                        hoist_reward = np.tanh(20.0 * dist_from_table)
-                else:
-                    hoist_reward = 0.0
-
-                # C. Precision Goal Reward (Max 1.0)
                 dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
                 precision_reward = 1.0 - np.tanh(5.0 * dist_to_goal)
+                if dist_to_goal < 0.05:
+                    precision_reward += 2.0
 
-                # Total Sum
-                # We multiply continuous_grasp_reward by 0.5 so it doesn't overpower the reach
-                # but the grasp_bonus (2.0) is the main driver.
-                # return reach_reward + (continuous_grasp_reward * 0.5) + grasp_bonus + hoist_reward + precision_reward
-                if is_goal:
-                    hoist_reward = 1.0
-                else:
-                    hoist_reward = np.tanh(20.0 * dist_from_table)
-                return precision_reward + hoist_reward
+                return reach_reward + precision_reward + hoist_reward
 
         return 0.0
 
@@ -467,10 +448,18 @@ class RobotArmEnv(gymnasium.Env):
             mujoco.mj_step(self.model, self.data)
         self.timesteps += 1
 
-        terminated = False
-        truncated = bool(self.timesteps >= self.max_episode_steps)
+        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+        cube_z = self.data.xpos[target_cube_id][2]
 
-        reward = self._compute_reward()
+        # Table is usually at Z=0. If cube goes below -0.05, it fell off.
+        has_fallen = False
+        if cube_z < self.base_pos_world[2] - 0.1:
+            has_fallen = True
+
+        truncated = bool(self.timesteps >= self.max_episode_steps)
+        terminated = has_fallen
+
+        reward = self._compute_reward(has_fallen=has_fallen)
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
@@ -521,7 +510,7 @@ class RobotArmEnv(gymnasium.Env):
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
 
-        if stage_roll < 0.3:
+        if stage_roll < 1.0:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["air_pos"], np.array([1, 0, 0, 0]))
 
