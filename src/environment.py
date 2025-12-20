@@ -187,7 +187,7 @@ class RobotArmEnv(gymnasium.Env):
         ]
         self.cube_neutral_start_position = [-0.1, 0.00, 0.43]
         self.action_scale = np.pi / 20.0
-        self.ee_pos_scale = 0.015
+        self.ee_pos_scale = 0.01
         self.ee_rot_scale = np.pi / 150.0
         self.delta_quat = np.zeros(4)
         self.rot6d_mat_obs = np.zeros(9)
@@ -214,6 +214,9 @@ class RobotArmEnv(gymnasium.Env):
             self.max_episode_steps = 300
         elif self.task == "stack":
             self.max_episode_steps = 500
+
+        self.last_action_smoothed = np.zeros(actions_dims)
+        self.smoothing_alpha = 0.3
 
         # 64 bit chosen for 64 bit computers
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
@@ -370,8 +373,9 @@ class RobotArmEnv(gymnasium.Env):
                     precision_reward += 2.0
 
                 # Gripper not included
-                action_magnitude = np.linalg.norm(action[:5])
-                action_penalty = -0.05 * action_magnitude
+                # action_magnitude = np.linalg.norm(action[:5])
+                # action_penalty = -0.05 * action_magnitude
+                action_penalty = 0.0
 
                 return reach_reward + precision_reward + hoist_reward + action_penalty
 
@@ -388,6 +392,11 @@ class RobotArmEnv(gymnasium.Env):
         elif self.control_mode == 1:
             # Sync configuration with current physical state
             self.configuration.update(self.data.qpos)
+
+            self.last_action_smoothed[:3] = (self.smoothing_alpha * action[:3]) + \
+                                            ((1.0 - self.smoothing_alpha) * self.last_action_smoothed)
+            self.last_action_smoothed[3:] = action[3:]
+            action = self.last_action_smoothed
 
             current_ee_pos = self.data.site("gripperframe").xpos.copy()
             new_mocap_pos = current_ee_pos + (action[:3] * self.ee_pos_scale)
@@ -450,7 +459,7 @@ class RobotArmEnv(gymnasium.Env):
         truncated = bool(self.timesteps >= self.max_episode_steps)
         terminated = has_fallen
 
-        reward = self._compute_reward(has_fallen=has_fallen)
+        reward = self._compute_reward(action, has_fallen=has_fallen)
 
         if self.task != "base":
             obs, fb_obs = self._get_obs()
@@ -514,7 +523,7 @@ class RobotArmEnv(gymnasium.Env):
             stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
-        # stage_probs = [1.0, 0.0, 1.0]
+        stage_probs = [0.4, 0.6, 0.0]
 
         if stage_roll < stage_probs[0]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
@@ -544,16 +553,15 @@ class RobotArmEnv(gymnasium.Env):
             # Set Cube A
             # Randomize Orientation
             theta = np.random.uniform(-np.pi, np.pi)
-            quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            quat_a = np.array([1, 0, 0, 0])
             self._set_cube_pos_quat("cube_a_joint", pos_a, quat_a)
-            # Set Orientation [w, x, y, z] - Identity Quaternion (No rotation)
-            # self.data.qpos[adr_a + 3: adr_a + 7] = [1, 0, 0, 0]
 
             # Set Cube B2
             theta = np.random.uniform(-np.pi, np.pi)
-            quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            quat_b = np.array([1, 0, 0, 0])
             self._set_cube_pos_quat("cube_b_joint", pos_b, quat_b)
-            # self.data.qpos[adr_b + 3: adr_b + 7] = [1, 0, 0, 0]
 
             self.data.qpos[:6] = self._arm_start_pos
             self.data.qvel[:6] = 0.0  # no arm movement
@@ -574,7 +582,7 @@ class RobotArmEnv(gymnasium.Env):
             self._sample_target()
 
         self.base_pos_world = self.data.body("base").xpos
-
+        self.last_action_smoothed = np.zeros(self.action_space.shape[0])
         self.object_start_height = self.base_pos_world[2] + 0.01
 
         self.timesteps = 0
