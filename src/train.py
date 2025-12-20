@@ -183,7 +183,7 @@ def train_agent():
 
     # --- REPLACED CheckpointCallback WITH CheckpointWithStatsCallback ---
     checkpoint_callback = CheckpointWithStatsCallback(
-        save_freq=20000,
+        save_freq=10000,
         save_path=f"./models/{run.id}",
         name_prefix="rl_model"
     )

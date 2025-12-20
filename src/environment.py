@@ -186,8 +186,7 @@ class RobotArmEnv(gymnasium.Env):
         ]
         self.cube_neutral_start_position = [-0.1, 0.00, 0.43]
         self.action_scale = np.pi / 20.0
-        self.action_smoothing = 0.9
-        self.ee_pos_scale = 0.01
+        self.ee_pos_scale = 0.001
         self.ee_rot_scale = np.pi / 150.0
         self.delta_quat = np.zeros(4)
         self.rot6d_mat_obs = np.zeros(9)
@@ -200,7 +199,7 @@ class RobotArmEnv(gymnasium.Env):
         actions_dims = 6
         # Task specific states included
         if self.task != "base":
-            obs_dims += 8
+            obs_dims += 6
         if self.control_mode == 1:
             # 3 pos + 3d rotation + 1 gripper
             actions_dims = 7
@@ -214,8 +213,6 @@ class RobotArmEnv(gymnasium.Env):
             self.max_episode_steps = 300
         elif self.task == "stack":
             self.max_episode_steps = 500
-
-        self.last_action = np.zeros(actions_dims)
 
         # 64 bit chosen for 64 bit computers
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
@@ -261,27 +258,31 @@ class RobotArmEnv(gymnasium.Env):
         cube_a_state = self._get_cube_data(self.cube_a_id, ee_pos_world)
         cube_b_state = self._get_cube_data(self.cube_b_id, ee_pos_world)
 
+        fb_obs = np.concatenate([robot_state, cube_a_state, cube_b_state]).astype(self.observation_space.dtype)
         if self.task != "base":
-            obs = np.concatenate([robot_state, cube_a_state, cube_b_state, self._get_task_states(ee_pos_world)]).astype(self.observation_space.dtype)
+            if self.object_focus_idx == 0:
+                target_cube_state, distractor_cube_state = cube_a_state, cube_b_state
+            else:
+                target_cube_state, distractor_cube_state = cube_b_state, cube_a_state
+            task_obs = np.concatenate([robot_state, target_cube_state, distractor_cube_state, self._get_task_states(ee_pos_world)]).astype(self.observation_space.dtype)
+            return task_obs, fb_obs
         else:
-            obs = np.concatenate([robot_state, cube_a_state, cube_b_state]).astype(self.observation_space.dtype)
-        return obs
+            return fb_obs, fb_obs
 
     def _get_task_states(self, ee_pos_world):
-        task_specific_states = np.zeros(8)
+        task_specific_states = np.zeros(6)
         if self.task == "reach":
             dynamic_goal_rel = self.dynamic_goal_pos - self.base_pos_world
             task_specific_states[0:3] = dynamic_goal_rel
             # end effector relative to goal position
-            task_specific_states[5:8] = ee_pos_world - self.dynamic_goal_pos
+            task_specific_states[3:6] = ee_pos_world - self.dynamic_goal_pos
         elif self.task == "lift":
             dynamic_goal_rel = self.dynamic_goal_pos - self.base_pos_world
             task_specific_states[0:3] = dynamic_goal_rel
-            task_specific_states[3:5] = self.object_focus_one_hot
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             target_cube_pos = self.data.xpos[target_cube_id].copy()
             obj_to_goal = self.dynamic_goal_pos - target_cube_pos
-            task_specific_states[5:8] = obj_to_goal
+            task_specific_states[3:6] = obj_to_goal
         return task_specific_states
 
     def _sample_target(self):
@@ -382,11 +383,9 @@ class RobotArmEnv(gymnasium.Env):
         elif self.control_mode == 1:
             # Sync configuration with current physical state
             self.configuration.update(self.data.qpos)
-            smooth_action = (self.action_smoothing * self.last_action) + ((1.0 - self.action_smoothing) * action)
-            self.last_action = smooth_action
 
             current_ee_pos = self.data.site("gripperframe").xpos.copy()
-            new_mocap_pos = current_ee_pos + (smooth_action[:3] * self.ee_pos_scale)
+            new_mocap_pos = current_ee_pos + (action[:3] * self.ee_pos_scale)
             new_mocap_pos[0] = np.clip(new_mocap_pos[0], -0.6 + self.base_pos_world[0], 0.6 + self.base_pos_world[0])  # X
             new_mocap_pos[1] = np.clip(new_mocap_pos[1], -0.6 + self.base_pos_world[1], 0.6 + self.base_pos_world[1])  # Y
             new_mocap_pos[2] = np.clip(new_mocap_pos[2], -0.02 + self.base_pos_world[2], 0.6 + self.base_pos_world[2])
@@ -395,7 +394,7 @@ class RobotArmEnv(gymnasium.Env):
             current_xmat = self.data.site("gripperframe").xmat.copy()
             current_quat = np.zeros(4)
             mujoco.mju_mat2Quat(current_quat, current_xmat)
-            quat = self._apply_delta_orientation(current_quat, smooth_action[3:6])
+            quat = self._apply_delta_orientation(current_quat, action[3:6])
             self.data.mocap_quat[self.mocap_id] = quat
 
             T_wt = mink.SE3.from_mocap_name(self.model, self.data, "target")
@@ -448,7 +447,14 @@ class RobotArmEnv(gymnasium.Env):
 
         reward = self._compute_reward(has_fallen=has_fallen)
 
-        return self._get_obs(), reward, terminated, truncated, self._get_info()
+        if self.task != "base":
+            obs, fb_obs = self._get_obs()
+            info = self._get_info()
+            info["fb_obs"] = fb_obs
+        else:
+            _, obs = self._get_obs()
+            info = self._get_info()
+        return obs, reward, terminated, truncated, info
 
     def _apply_delta_orientation(self, current_quat, euler_action):
         """
@@ -560,7 +566,15 @@ class RobotArmEnv(gymnasium.Env):
         self.object_start_height = target_cube_pos[2]
 
         self.timesteps = 0
-        return self._get_obs(), self._get_info()
+
+        if self.task != "base":
+            obs, fb_obs = self._get_obs()
+            info = self._get_info()
+            info["fb_obs"] = fb_obs
+        else:
+            _, obs = self._get_obs()
+            info = self._get_info()
+        return obs, info
 
     def render(self):
         if self.render_mode == "human":
