@@ -10,7 +10,7 @@ from sb3_contrib import TQC, CrossQ
 from stable_baselines3 import SAC, PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback
 from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.monitor import Monitor
 
@@ -118,6 +118,10 @@ def train_agent():
         [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
     env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
+    eval_env = DummyVecEnv(
+        [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
+    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., training=False)
+
     policy_kwargs = dict(net_arch=[256, 256])
     if ALGO == "TQC":
         policy_kwargs = dict(
@@ -188,10 +192,22 @@ def train_agent():
         name_prefix="rl_model"
     )
 
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=f"./models/{run.id}/best_model",
+        log_path=f"./models/{run.id}/eval_logs",
+        eval_freq=5000,
+        n_eval_episodes=10,
+        deterministic=True,
+        render=False,
+        verbose=1,
+    )
+
     callback_group = CallbackList([
         raw_reward_callback,
         wandb_callback,
-        checkpoint_callback
+        checkpoint_callback,
+        eval_callback
     ])
 
     print("--- 3. Starting Training ---")

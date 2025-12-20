@@ -394,7 +394,7 @@ class RobotArmEnv(gymnasium.Env):
             self.configuration.update(self.data.qpos)
 
             self.last_action_smoothed[:3] = (self.smoothing_alpha * action[:3]) + \
-                                            ((1.0 - self.smoothing_alpha) * self.last_action_smoothed)
+                                            ((1.0 - self.smoothing_alpha) * self.last_action_smoothed[:3])
             self.last_action_smoothed[3:] = action[3:]
             action = self.last_action_smoothed
 
@@ -512,7 +512,6 @@ class RobotArmEnv(gymnasium.Env):
 
         active_cube_name = cube_joints[active_cube_idx]
         other_cube_name = cube_joints[other_cube_idx]
-        stage_roll = np.random.rand()
 
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
@@ -523,7 +522,17 @@ class RobotArmEnv(gymnasium.Env):
             stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
-        stage_probs = [0.4, 0.6, 0.0]
+        stage_probs = [0.1, 0.2, 0.7]
+
+        forced_stage = options.get("stage", None) if options else None
+
+        if forced_stage == "hold":
+            stage_probs = [1.0, 0.0, 0.0]  # Forces Hold logic
+        elif forced_stage == "hoist":
+            stage_probs = [0.0, 1.0, 0.0]  # Forces Hoist logic (assuming probs [0.3, 0.4, 0.3])
+        elif forced_stage == "random":
+            stage_probs = [0.0, 0.0, 1.0]  # Forces Random logic
+        stage_roll = np.random.rand()  # Default behavior
 
         if stage_roll < stage_probs[0]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
