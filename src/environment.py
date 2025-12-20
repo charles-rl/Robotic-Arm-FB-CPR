@@ -186,6 +186,7 @@ class RobotArmEnv(gymnasium.Env):
         ]
         self.cube_neutral_start_position = [-0.1, 0.00, 0.43]
         self.action_scale = np.pi / 20.0
+        self.action_smoothing = 0.9
         self.ee_pos_scale = 0.01
         self.ee_rot_scale = np.pi / 150.0
         self.delta_quat = np.zeros(4)
@@ -214,6 +215,8 @@ class RobotArmEnv(gymnasium.Env):
         elif self.task == "stack":
             self.max_episode_steps = 500
 
+        self.last_action = np.zeros(actions_dims)
+
         # 64 bit chosen for 64 bit computers
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dims,), dtype=np.float64)
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
@@ -236,6 +239,7 @@ class RobotArmEnv(gymnasium.Env):
         """
         :return: Unnormalized qpos and qvel, must be normalized outside the environment
         """
+        # TODO: Maybe apply sin and cos to the 5th joint because the wrist joint is kinda like a circle anyways
         qpos = self.data.qpos[:6]
         qvel = self.data.qvel[:6]
         # Tip of the jaw position
@@ -339,40 +343,19 @@ class RobotArmEnv(gymnasium.Env):
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos = self.data.xpos[target_cube_id].copy()
 
-            # --- 1. Grasp Analysis (New Continuous Logic) ---
             dist_ee_cube = np.linalg.norm(ee_pos - cube_pos)
-            # Get sensor data (Raw force in Newtons)
-            left_f = self.data.sensordata[self.left_jaw_sensor_id]
-            right_f = self.data.sensordata[self.right_jaw_sensor_id]
 
-            # We take the MIN to ensure BOTH fingers are engaging (pincer grasp)
-            # If it pushes with one finger, min_force is 0.
-            min_force = min(left_f, right_f)
-            # Continuous reward: Encourages applying force [0.0 to 1.0]
-            # Scaling factor /5.0 means 5N of force gives ~0.76 reward
-            is_touching_distance = dist_ee_cube < 0.03  # 3cm tolerance
-            if is_touching_distance:
-                continuous_grasp_reward = np.tanh(min_force / 5.0)
-            else:
-                continuous_grasp_reward = 0.0
-            # Discrete "Latching" Bonus:
-            # If we have a solid grip (> 1N on both fingers), give a massive cookie.
-            has_solid_grip = (min_force > 1.0) and is_touching_distance
-            grasp_bonus = 2.0 if has_solid_grip else 0.0
-
-            # --- 2. Lift/Goal Analysis ---
             dist_from_table = cube_pos[2] - self.object_start_height
             is_lifted = dist_from_table > 0.05
 
             dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
-            is_goal = dist_z < 0.08
+            is_goal = dist_z < 0.05
 
             if self.reward_type == "sparse":
                 reward = 0.0
                 # Using has_solid_grip instead of distance check for robustness
-                if has_solid_grip: reward += 0.5
-                if has_solid_grip and is_lifted: reward += 0.5
-                if has_solid_grip and is_lifted and is_goal: reward += 0.5
+                if is_lifted: reward += 0.5
+                if is_lifted and is_goal: reward += 0.5
                 return reward
 
             elif self.reward_type == "dense":
@@ -399,8 +382,11 @@ class RobotArmEnv(gymnasium.Env):
         elif self.control_mode == 1:
             # Sync configuration with current physical state
             self.configuration.update(self.data.qpos)
+            smooth_action = (self.action_smoothing * self.last_action) + ((1.0 - self.action_smoothing) * action)
+            self.last_action = smooth_action
+
             current_ee_pos = self.data.site("gripperframe").xpos.copy()
-            new_mocap_pos = current_ee_pos + (action[:3] * self.ee_pos_scale)
+            new_mocap_pos = current_ee_pos + (smooth_action[:3] * self.ee_pos_scale)
             new_mocap_pos[0] = np.clip(new_mocap_pos[0], -0.6 + self.base_pos_world[0], 0.6 + self.base_pos_world[0])  # X
             new_mocap_pos[1] = np.clip(new_mocap_pos[1], -0.6 + self.base_pos_world[1], 0.6 + self.base_pos_world[1])  # Y
             new_mocap_pos[2] = np.clip(new_mocap_pos[2], -0.02 + self.base_pos_world[2], 0.6 + self.base_pos_world[2])
@@ -409,7 +395,7 @@ class RobotArmEnv(gymnasium.Env):
             current_xmat = self.data.site("gripperframe").xmat.copy()
             current_quat = np.zeros(4)
             mujoco.mju_mat2Quat(current_quat, current_xmat)
-            quat = self._apply_delta_orientation(current_quat, action[3:6])
+            quat = self._apply_delta_orientation(current_quat, smooth_action[3:6])
             self.data.mocap_quat[self.mocap_id] = quat
 
             T_wt = mink.SE3.from_mocap_name(self.model, self.data, "target")
@@ -452,6 +438,7 @@ class RobotArmEnv(gymnasium.Env):
         cube_z = self.data.xpos[target_cube_id][2]
 
         # Table is usually at Z=0. If cube goes below -0.05, it fell off.
+        # TODO: If any cube has fallen then terminate
         has_fallen = False
         if cube_z < self.base_pos_world[2] - 0.1:
             has_fallen = True
