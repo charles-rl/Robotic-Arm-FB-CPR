@@ -25,6 +25,10 @@ CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
 REWARD_THRESHOLD = 100.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
+LOAD_CHECKPOINT = True
+CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
+CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
+
 
 class RawRewardCallback(BaseCallback):
     """Logs raw reward/length to WandB."""
@@ -103,83 +107,76 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 300_000
+        total_timesteps = 200_000
 
     # 1. Initialize WandB
     run = wandb.init(
         project=f"so101-{TASK}-fb",
         name=RUN_NAME,
-        config={"algo": ALGO, "task": TASK, "control": CONTROL_MODE},
+        config={"algo": ALGO, "task": TASK, "control": CONTROL_MODE, "finetune": LOAD_CHECKPOINT},
         sync_tensorboard=True,
     )
 
-    # 2. Create Training Env
-    env = DummyVecEnv(
+    base_env = DummyVecEnv(
         [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
-    env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10.)
+
+    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_STATS_PATH):
+        print(f"🔄 Loading Environment Stats from {CHECKPOINT_STATS_PATH}")
+        # Load stats, but point it to the NEW environment (base_env)
+        # training=True ensures we continue updating stats as we learn the new task
+        env = VecNormalize.load(CHECKPOINT_STATS_PATH, base_env)
+        env.training = True
+        env.norm_reward = False  # Keep reward raw for clarity, or set True if your previous run did
+    else:
+        print("✨ Creating New Environment Stats")
+        env = VecNormalize(base_env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
     eval_env = DummyVecEnv(
         [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., training=False)
 
-    policy_kwargs = dict(net_arch=[256, 256])
+    # 3. Load or Create Model
     if ALGO == "TQC":
-        policy_kwargs = dict(
-            use_sde=True,  # <--- 1. ENABLE gSDE (Smooth Exploration)
-            log_std_init=-2,  # Start with smaller, more precise exploration
-            net_arch=[256, 256],  # Standard architecture
-        )
-
-    # 3. Define Algorithm
-    common_params = dict(
-        policy="MlpPolicy",
-        env=env,
-        verbose=1,
-        tensorboard_log=f"runs/{run.id}",
-        policy_kwargs=policy_kwargs,
-    )
-
-    if ALGO == "TQC":
-        model = TQC(
-            **common_params,
-            top_quantiles_to_drop_per_net=2,
-            learning_rate=3e-4,
-            batch_size=batch_size,
-            buffer_size=buffer_size,
-            train_freq=(100, "step"),
-            gradient_steps=200,
-            ent_coef="auto",
-        )
-    elif ALGO == "CrossQ":
-        model = CrossQ(
-            "MlpPolicy",
-            env,
-            verbose=1,
-            learning_rate=1e-3,
-            batch_size=256,
-            buffer_size=1_000_000,
-            ent_coef="auto",
-        )
+        ModelClass = TQC
     elif ALGO == "SAC":
-        model = SAC(
-            **common_params,
-            learning_rate=3e-4,  # Standard SAC LR
-            batch_size=batch_size,
-            buffer_size=buffer_size,
-            train_freq=1,
-            gradient_steps=1,
-            ent_coef="auto",
-        )
+        ModelClass = SAC
     elif ALGO == "PPO":
-        model = PPO(
-            **common_params,
-            learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=64,
-            ent_coef=0.01,
+        ModelClass = PPO
+    elif ALGO == "CrossQ":
+        ModelClass = CrossQ
+
+    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_MODEL_PATH):
+        print(f"🔄 Loading Model Weights from {CHECKPOINT_MODEL_PATH}")
+
+        # We load the model, but we attach the NEW env.
+        # custom_objects: We can force a lower learning rate for fine-tuning
+        model = ModelClass.load(
+            CHECKPOINT_MODEL_PATH,
+            env=env,
+            tensorboard_log=f"runs/{run.id}",
+            custom_objects={
+                "learning_rate": 5e-5,  # Lower LR for fine-tuning (optional, remove to keep original)
+                "ent_coef": "auto_0.1"  # Reset entropy to encourage some new exploration
+            }
         )
+        # IMPORTANT: When loading, the replay buffer is preserved.
+        # If the task is very different, you might want to clear it:
+        # model.replay_buffer.reset()
+        # But for Hold -> Lift, keeping the "Hold" memories is actually good.
     else:
-        raise ValueError(f"Unknown Algorithm: {ALGO}")
+        print("✨ Initializing New Model")
+        # ... (Your original initialization code) ...
+        policy_kwargs = dict(net_arch=[256, 256])
+        if ALGO == "TQC":
+            policy_kwargs["use_sde"] = True
+            policy_kwargs["log_std_init"] = -2
+
+        common_params = dict(policy="MlpPolicy", env=env, verbose=1, tensorboard_log=f"runs/{run.id}",
+                             policy_kwargs=policy_kwargs)
+
+        if ALGO == "TQC":
+            model = TQC(**common_params, top_quantiles_to_drop_per_net=2, learning_rate=3e-4, batch_size=batch_size,
+                        buffer_size=buffer_size, train_freq=(100, "step"), gradient_steps=200, ent_coef="auto")
 
     # 4. Callbacks
     raw_reward_callback = RawRewardCallback()
@@ -192,8 +189,19 @@ def train_agent():
         name_prefix="rl_model"
     )
 
+    eval_env_specific = DummyVecEnv([lambda: Monitor(
+        RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
+
+    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_STATS_PATH):
+        eval_env_specific = VecNormalize.load(CHECKPOINT_STATS_PATH, eval_env_specific)
+        eval_env_specific.training = False
+        eval_env_specific.norm_reward = False
+    else:
+        eval_env_specific = VecNormalize(eval_env_specific, norm_obs=True, norm_reward=False, clip_obs=10.,
+                                         training=False)
+
     eval_callback = EvalCallback(
-        eval_env,
+        eval_env_specific,
         best_model_save_path=f"./models/{run.id}/best_model",
         log_path=f"./models/{run.id}/eval_logs",
         eval_freq=5000,
@@ -216,6 +224,7 @@ def train_agent():
         progress_bar=True,
         log_interval=log_interval,
         callback=callback_group,
+        reset_num_timesteps=True
     )
 
     # 5. Final Save
