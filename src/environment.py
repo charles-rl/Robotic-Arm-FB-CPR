@@ -8,33 +8,33 @@ from scipy.spatial.transform import Rotation as R
 POSITIONS = {
     "Center": {
         "air_pos": [-0.25, 0.0, 0.63],
-        "air_qpos": np.array([-0.0256, -1.6549, 1.0216, 0.5479, -1.5147, 0.4505]),
+        "air_qpos": np.array([0.0553, -1.5220, 0.9610, 0.5584, 1.6101, 0.4974]),
         "table_pos": [-0.25, 0.0, 0.43],
-        "table_qpos": np.array([-0.1105, -0.6478, 1.2145, 0.6488, -1.5149, 0.7772])
+        "table_qpos": np.array([0.1299, -0.9367, 1.5517, 0.2717, 1.7114, 0.9723])
     },
     "Left": {
         "air_pos": [-0.25, 0.15, 0.63],
-        "air_qpos": np.array([-0.7104, -0.9144, 0.7525, 0.2296, 1.6324, 0.4714]),
+        "air_qpos": np.array([-0.7155, -0.9421, 0.9299, -0.0953, 1.5903, 0.5242]),
         "table_pos": [-0.25, 0.15, 0.43],
-        "table_qpos": np.array([-0.8048, -0.1693, 0.9395, 0.2268, -1.6803, 0.4066])
+        "table_qpos": np.array([-0.6565, -0.1500, 1.1644, -0.2361, 1.5724, 0.9172])
     },
     "Right": {
         "air_pos": [-0.25, -0.15, 0.63],
-        "air_qpos": np.array([0.7957, -0.9497, 0.8520, 0.0732, 1.5838, 0.4697]),
+        "air_qpos": np.array([0.7965, -0.9694, 0.8854, 0.0442, 1.5839, 0.5733]),
         "table_pos": [-0.25, -0.15, 0.43],
-        "table_qpos": np.array([0.8181, -0.1458, 0.9392, 0.1610, 1.6450, 0.5912])
+        "table_qpos": np.array([0.8350, -0.0737, 1.1920, -0.4043, 1.6566, 1.0319])
     },
     "Far_Left": {
         "air_pos": [-0.1, 0.1, 0.63],
-        "air_qpos": np.array([-0.2480, 0.0105, 0.0497, -0.0548, 1.6172, 0.6541]),
+        "air_qpos": np.array([-0.2764, 0.0184, 0.1065, -0.1694, 1.6029, 0.5976]),
         "table_pos": [-0.1, 0.1, 0.43],
-        "table_qpos": np.array([-0.3462, 0.7594, 0.3037, -0.7716, -1.6587, 0.5156])
+        "table_qpos": np.array([-0.2537, 0.8692, 0.2735, -0.9194, 1.5768, 0.6902])
     },
     "Far_Right": {
         "air_pos": [-0.1, -0.1, 0.63],
-        "air_qpos": np.array([0.2271, -0.0655, 0.1389, -0.0051, -1.5699, 0.6396]),
+        "air_qpos": np.array([0.3337, 0.0156, 0.2294, -0.3951, 1.5766, 0.2972]),
         "table_pos": [-0.1, -0.1, 0.43],
-        "table_qpos": np.array([0.2556, 0.8585, 0.2434, -0.8558, -1.5711, 0.7101])
+        "table_qpos": np.array([0.3746, 0.8199, 0.3387, -0.9249, 1.6066, 0.9172])
     },
 }
 
@@ -155,7 +155,6 @@ class RobotArmEnv(gymnasium.Env):
         self.joint_max = self.model.jnt_range[:6, 1]
         self.cube_a_id = self.model.body("cube_a").id
         self.cube_b_id = self.model.body("cube_b").id
-        self.z_height_achieved = False
         self.gripper_body_id = self.data.body("gripper").id
         self.left_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "left_finger_sensor")
         self.right_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "right_finger_sensor")
@@ -173,7 +172,7 @@ class RobotArmEnv(gymnasium.Env):
             0.0,
             self.joint_min[1],
             self.joint_max[2],
-            np.random.uniform(0.4, 0.6),
+            0.5,
             np.pi / 2,
             self.joint_min[-1],  # Close gripper
         ], dtype=np.float32)
@@ -459,11 +458,12 @@ class RobotArmEnv(gymnasium.Env):
         # TODO: Be careful of this during pick and place phase, might terminate prematurely
         target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
         cube_z = self.data.xpos[target_cube_id][2]
+
         if not self.z_height_achieved:
             self.z_height_achieved = bool(cube_z > self.base_pos_world[2] + 0.08)
         elif cube_z < self.base_pos_world[2] + 0.05:
-                has_fallen = True
-                self.z_height_achieved = False
+            has_fallen = True
+            self.z_height_achieved = False
 
         truncated = bool(self.timesteps >= self.max_episode_steps)
         terminated = has_fallen
@@ -526,12 +526,12 @@ class RobotArmEnv(gymnasium.Env):
         loc_data = POSITIONS[loc_name]
 
         if self.total_episodes < 150:  # 30k timesteps
-            stage_probs = [0.3, 0.4, 0.3]  # 30% Hold, 40% Hoist, 30% Random
+            stage_probs = [0.4, 0.5, 0.1]  # 40% Hold, 50% Hoist, 10% Random
         elif self.total_episodes < 300:  # 60k timesteps
             stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
-        stage_probs = [0.1, 0.2, 0.7]
+        # stage_probs = [0.1, 0.2, 0.7]
 
         forced_stage = options.get("stage", None) if options else None
 

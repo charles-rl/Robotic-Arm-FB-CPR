@@ -8,45 +8,67 @@ import pygame
 Lift:
 Center
 Cube Position (Air): [-0.25, 0.0, 0.63]
-perfect_grasp_qpos = np.array([-0.0256, -1.6549, 1.0216, 0.5479, -1.5147, 0.4505])
+perfect_grasp_qpos = np.array([0.0553, -1.5220, 0.9610, 0.5584, 1.6101, 0.4974])
 
 Left
 Cube Position (Air): [-0.25, 0.15, 0.63]
-perfect_grasp_qpos = np.array([-0.7104, -0.9144, 0.7525, 0.2296, 1.6324, 0.4714])
+perfect_grasp_qpos = np.array([-0.7155, -0.9421, 0.9299, -0.0953, 1.5903, 0.5242])
 
 Right
 Cube Position (Air): [-0.25, -0.15, 0.63]
-perfect_grasp_qpos = np.array([0.7957, -0.9497, 0.8520, 0.0732, 1.5838, 0.4697])
+perfect_grasp_qpos = np.array([0.7965, -0.9694, 0.8854, 0.0442, 1.5839, 0.5733])
 
 Far Left
 Cube Position (Air): [-0.1, 0.1, 0.63]
-perfect_grasp_qpos = np.array([-0.2480, 0.0105, 0.0497, -0.0548, 1.6172, 0.6541])
+perfect_grasp_qpos = np.array([-0.2764, 0.0184, 0.1065, -0.1694, 1.6029, 0.5976])
 
 Far Right
 Cube Position (Air): [-0.1, -0.1, 0.63]
-perfect_grasp_qpos = np.array([0.2271, -0.0655, 0.1389, -0.0051, -1.5699, 0.6396])
+perfect_grasp_qpos = np.array([0.3337, 0.0156, 0.2294, -0.3951, 1.5766, 0.2972])
 
 
 Hoist:
 Center
 Cube Position (Table): [-0.25, 0.0, 0.43]
-perfect_grasp_qpos = np.array([-0.1105, -0.6478, 1.2145, 0.6488, -1.5149, 0.7772])
+perfect_grasp_qpos = np.array([0.1299, -0.9367, 1.5517, 0.2717, 1.7114, 0.9723])
 
 Left
 Cube Position (Air): [-0.25, 0.15, 0.43]
-perfect_grasp_qpos = np.array([-0.8048, -0.1693, 0.9395, 0.2268, -1.6803, 0.4066])
+perfect_grasp_qpos = np.array([-0.6565, -0.1500, 1.1644, -0.2361, 1.5724, 0.9172])
 
 Right
 Cube Position (Air): [-0.25, -0.15, 0.43]
-perfect_grasp_qpos = np.array([0.8181, -0.1458, 0.9392, 0.1610, 1.6450, 0.5912])
+perfect_grasp_qpos = np.array([0.8350, -0.0737, 1.1920, -0.4043, 1.6566, 1.0319])
 
 Far Left
 Cube Position (Air): [-0.1, 0.1, 0.43]
-perfect_grasp_qpos = np.array([-0.3462, 0.7594, 0.3037, -0.7716, -1.6587, 0.5156])
+perfect_grasp_qpos = np.array([-0.2537, 0.8692, 0.2735, -0.9194, 1.5768, 0.6902])
 
 Far Right
 Cube Position (Table): [-0.1, -0.1, 0.43]
-perfect_grasp_qpos = np.array([0.2556, 0.8585, 0.2434, -0.8558, -1.5711, 0.7101])
+perfect_grasp_qpos = np.array([0.3746, 0.8199, 0.3387, -0.9249, 1.6066, 0.9172])
+
+
+Pre-Grasp
+Center
+Cube Position (Table): [-0.25, 0.0, 0.43]
+perfect_grasp_qpos = np.array([0.1011, -1.7453, 1.4979, 0.9901, 1.5458, 0.5405])
+
+Left
+Cube Position (Air): [-0.25, 0.15, 0.43]
+perfect_grasp_qpos = np.array([-0.7156, -0.9924, 1.5539, -0.1082, 1.5717, 0.9175])
+
+Right
+Cube Position (Air): [-0.25, -0.15, 0.43]
+perfect_grasp_qpos = np.array([0.8224, -0.7102, 1.3881, -0.0829, 1.5715, 0.5755])
+
+Far Left
+Cube Position (Air): [-0.1, 0.1, 0.43]
+perfect_grasp_qpos = np.array([-0.2833, 0.1671, 0.7488, -0.5424, 1.5720, 0.6259])
+
+Far Right
+Cube Position (Table): [-0.1, -0.1, 0.43]
+perfect_grasp_qpos = np.array([0.3778, 0.2592, 0.5301, -0.3884, 1.5718, 0.7248])
 """
 
 
@@ -220,6 +242,24 @@ def laboratory_mode():
     # Load Model
     model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
     data = mujoco.MjData(model)
+
+    joint_min = model.jnt_range[:6, 0]
+    joint_max = model.jnt_range[:6, 1]
+
+    start_pos = np.array([
+        0.0,
+        joint_min[1],
+        joint_max[2],
+        0.5,
+        np.pi / 2,
+        joint_min[-1],
+    ], dtype=np.float32)
+
+    # Initialize the robot here BEFORE you start moving to the cube
+    data.qpos[:6] = start_pos
+    data.qvel[:6] = 0.0
+    data.ctrl[:6] = start_pos
+
     mujoco.mj_forward(model, data)
 
     # IDs
@@ -237,7 +277,7 @@ def laboratory_mode():
 
     # Cube Control State
     cube_frozen = True  # Starts floating
-    cube_target_pos = np.array([-0.10, 0.10, 0.43])  # The "Air" position you want to test
+    cube_target_pos = np.array([-0.1, 0.1, 0.63])  # The "Air" position you want to test
 
     # Manual Joint Offsets (For Wrist/Gripper)
     # [ShoulderPan, ShoulderLift, Elbow, WristFlex, WristRoll, Gripper]
@@ -368,4 +408,4 @@ def laboratory_mode():
 
 
 if __name__ == "__main__":
-    laboratory_mode_with_sensors()
+    laboratory_mode()

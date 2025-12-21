@@ -25,7 +25,7 @@ CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
 REWARD_THRESHOLD = 100.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
-LOAD_CHECKPOINT = True
+LOAD_CHECKPOINT = False
 CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
 CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
 
@@ -107,7 +107,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 200_000
+        total_timesteps = 300_000
 
     # 1. Initialize WandB
     run = wandb.init(
