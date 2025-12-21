@@ -131,10 +131,6 @@ def train_agent():
         print("✨ Creating New Environment Stats")
         env = VecNormalize(base_env, norm_obs=True, norm_reward=False, clip_obs=10.)
 
-    eval_env = DummyVecEnv(
-        [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., training=False)
-
     # 3. Load or Create Model
     if ALGO == "TQC":
         ModelClass = TQC
@@ -204,7 +200,7 @@ def train_agent():
         eval_env_specific,
         best_model_save_path=f"./models/{run.id}/best_model",
         log_path=f"./models/{run.id}/eval_logs",
-        eval_freq=5000,
+        eval_freq=2000,
         n_eval_episodes=10,
         deterministic=True,
         render=False,

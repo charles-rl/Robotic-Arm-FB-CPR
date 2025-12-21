@@ -155,6 +155,7 @@ class RobotArmEnv(gymnasium.Env):
         self.joint_max = self.model.jnt_range[:6, 1]
         self.cube_a_id = self.model.body("cube_a").id
         self.cube_b_id = self.model.body("cube_b").id
+        self.z_height_achieved = False
         self.gripper_body_id = self.data.body("gripper").id
         self.left_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "left_finger_sensor")
         self.right_jaw_sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "right_finger_sensor")
@@ -393,10 +394,10 @@ class RobotArmEnv(gymnasium.Env):
             # Sync configuration with current physical state
             self.configuration.update(self.data.qpos)
 
-            self.last_action_smoothed[:3] = (self.smoothing_alpha * action[:3]) + \
-                                            ((1.0 - self.smoothing_alpha) * self.last_action_smoothed[:3])
-            self.last_action_smoothed[3:] = action[3:]
-            action = self.last_action_smoothed
+            self.last_action_smoothed[:3] = (self.smoothing_alpha * action[:3].copy()) + \
+                                            ((1.0 - self.smoothing_alpha) * self.last_action_smoothed[:3].copy())
+            self.last_action_smoothed[3:] = action[3:].copy()
+            action = self.last_action_smoothed.copy()
 
             current_ee_pos = self.data.site("gripperframe").xpos.copy()
             new_mocap_pos = current_ee_pos + (action[:3] * self.ee_pos_scale)
@@ -447,14 +448,22 @@ class RobotArmEnv(gymnasium.Env):
             mujoco.mj_step(self.model, self.data)
         self.timesteps += 1
 
-        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
-        cube_z = self.data.xpos[target_cube_id][2]
+        cube_az = self.data.xpos[self.cube_a_id][2]
+        cube_bz = self.data.xpos[self.cube_b_id][2]
 
         # Table is usually at Z=0. If cube goes below -0.05, it fell off.
-        # TODO: If any cube has fallen then terminate
         has_fallen = False
-        if cube_z < self.base_pos_world[2] - 0.1:
+        if (cube_az < self.base_pos_world[2] - 0.1) or (cube_bz < self.base_pos_world[2] - 0.1):
             has_fallen = True
+
+        # TODO: Be careful of this during pick and place phase, might terminate prematurely
+        target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+        cube_z = self.data.xpos[target_cube_id][2]
+        if not self.z_height_achieved:
+            self.z_height_achieved = bool(cube_z > self.base_pos_world[2] + 0.08)
+        elif cube_z < self.base_pos_world[2] + 0.05:
+                has_fallen = True
+                self.z_height_achieved = False
 
         truncated = bool(self.timesteps >= self.max_episode_steps)
         terminated = has_fallen
@@ -593,6 +602,7 @@ class RobotArmEnv(gymnasium.Env):
         self.base_pos_world = self.data.body("base").xpos
         self.last_action_smoothed = np.zeros(self.action_space.shape[0])
         self.object_start_height = self.base_pos_world[2] + 0.01
+        self.z_height_achieved = False
 
         self.timesteps = 0
         self.total_episodes += 1
