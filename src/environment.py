@@ -537,7 +537,7 @@ class RobotArmEnv(gymnasium.Env):
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
             self.current_curriculum_stage = 2
-        # stage_probs = [0.0, 1.0, 0.7]
+        # stage_probs = [0.0, 0.0, 1.0]
 
         forced_stage = options.get("stage", None) if options else None
 
@@ -564,7 +564,9 @@ class RobotArmEnv(gymnasium.Env):
         active_cube_name = cube_joints[active_cube_idx]
         other_cube_name = cube_joints[other_cube_idx]
 
-        loc_name = np.random.choice(list(POSITIONS.keys()))
+        # loc_name = np.random.choice(list(POSITIONS.keys()))
+        forced_pos_idx = 0
+        loc_name = list(POSITIONS.keys())[forced_pos_idx]
         loc_data = POSITIONS[loc_name]
 
         if stage_roll < stage_probs[0]:
