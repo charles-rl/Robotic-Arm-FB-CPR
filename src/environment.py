@@ -462,12 +462,11 @@ class RobotArmEnv(gymnasium.Env):
         if not self.z_height_achieved:
             self.z_height_achieved = bool(cube_z > self.base_pos_world[2] + 0.08)
         elif cube_z < self.base_pos_world[2] + 0.05:
-            has_fallen = True
             self.z_height_achieved = False
 
         has_failed_to_pick = False
-        if self.timesteps > 150 and not self.z_height_achieved:
-            has_failed_to_pick = True
+        # if self.timesteps > 150 and not self.z_height_achieved:
+        #     has_failed_to_pick = True
 
         truncated = bool(self.timesteps >= self.max_episode_steps)
         terminated = has_fallen or has_failed_to_pick
