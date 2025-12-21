@@ -4,6 +4,7 @@ import mujoco
 import mujoco.viewer
 import mink
 from scipy.spatial.transform import Rotation as R
+from collections import deque
 
 POSITIONS = {
     "Center": {
@@ -41,7 +42,7 @@ POSITIONS = {
 class RobotArmEnv(gymnasium.Env):
     max_iters = 2 # tiny changes per timestep
     FRAME_SKIP = 17
-    def __init__(self, render_mode=None, reward_type=None, task="base", control_mode="delta_joint_position"):
+    def __init__(self, render_mode=None, reward_type=None, task="base", control_mode="delta_joint_position", evaluate=False):
         """
         ## Robot Specification
         - **Robot:** SO-101 (Standard Open Manipulator).
@@ -130,7 +131,8 @@ class RobotArmEnv(gymnasium.Env):
             sparse
             dense
         """
-        print(f"Environment Initialized with {render_mode}, {reward_type}, {task}, {control_mode}")
+        print(f"Environment Initialized with {render_mode}, {reward_type}, {task}, {control_mode}, evaluate={evaluate}")
+        self.evaluate = evaluate
         self.renderer = None
         self.model = mujoco.MjModel.from_xml_path("../simulation/scene.xml")
         self.data = mujoco.MjData(self.model)
@@ -165,7 +167,6 @@ class RobotArmEnv(gymnasium.Env):
         control_modes = ("delta_joint_position", "delta_end_effector")
         self.control_mode = control_modes.index(control_mode)
         self.render_mode = render_mode
-        self.total_episodes = 0
 
         # Initialize positions - will be set randomly in reset()
         self._arm_start_pos = np.array([
@@ -193,6 +194,8 @@ class RobotArmEnv(gymnasium.Env):
         self.rot6d_mat_obs = np.zeros(9)
         self.rot6d_idxs = np.array([0, 3, 6, 1, 4, 7], dtype=np.int32)
         self.base_pos_world = None
+        self.success_history = deque(maxlen=50)
+        self.current_curriculum_stage = 0
         self.timesteps = 0
 
         self.max_episode_steps = 600
@@ -325,7 +328,7 @@ class RobotArmEnv(gymnasium.Env):
             self.dynamic_goal_pos = cube_pos_world.copy()
             self.dynamic_goal_pos[2] += lift_height
 
-    def _compute_reward(self, action, has_fallen=False):
+    def _compute_reward(self, action):
         """
         Calculates reward based on the current task.
         SmolVLA/LeRobot Style: 0.5 for partial success, 1.0 for full success.
@@ -342,9 +345,6 @@ class RobotArmEnv(gymnasium.Env):
                 return 1.0 - np.tanh(3.0 * distance)
 
         elif self.task == "lift":
-            if has_fallen:
-                return -10.0
-
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos = self.data.xpos[target_cube_id].copy()
 
@@ -465,10 +465,19 @@ class RobotArmEnv(gymnasium.Env):
             has_fallen = True
             self.z_height_achieved = False
 
-        truncated = bool(self.timesteps >= self.max_episode_steps)
-        terminated = has_fallen
+        has_failed_to_pick = False
+        if self.timesteps > 150 and not self.z_height_achieved:
+            has_failed_to_pick = True
 
-        reward = self._compute_reward(action, has_fallen=has_fallen)
+        truncated = bool(self.timesteps >= self.max_episode_steps)
+        terminated = has_fallen or has_failed_to_pick
+
+        reward = self._compute_reward(action)
+
+        if has_fallen:
+            reward = -10.0
+        elif has_failed_to_pick:
+            reward = -2.0
 
         if self.task != "base":
             obs, fb_obs = self._get_obs()
@@ -507,7 +516,41 @@ class RobotArmEnv(gymnasium.Env):
         self.data.qpos[adr + 3: adr + 7] = quat
 
     def reset(self, seed=None, options=None):
+        if self.timesteps > 0:
+            target_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
+            current_z = self.data.xpos[target_id][2]
+            is_success = self.z_height_achieved and (current_z > self.base_pos_world[2] + 0.05)
+            self.success_history.append(1 if is_success else 0)
+
+        if len(self.success_history) > 0:
+            success_rate = sum(self.success_history) / len(self.success_history)
+        else:
+            success_rate = 0.0
+
+        if self.evaluate: success_rate = 1.0
+
+        if success_rate < 0.2:
+            stage_probs = [0.4, 0.5, 0.1]  # 40% Hold, 50% Hoist, 10% Random
+            self.current_curriculum_stage = 0
+        elif success_rate < 0.6:
+            stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
+            self.current_curriculum_stage = 1
+        else:
+            stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
+            self.current_curriculum_stage = 2
+        # stage_probs = [0.0, 1.0, 0.7]
+
+        forced_stage = options.get("stage", None) if options else None
+
         super().reset(seed=seed)
+
+        if forced_stage == "hold":
+            stage_probs = [1.0, 0.0, 0.0]  # Forces Hold logic
+        elif forced_stage == "hoist":
+            stage_probs = [0.0, 1.0, 0.0]  # Forces Hoist logic (assuming probs [0.3, 0.4, 0.3])
+        elif forced_stage == "random":
+            stage_probs = [0.0, 0.0, 1.0]  # Forces Random logic
+        stage_roll = np.random.rand()  # Default behavior
 
         mujoco.mj_resetData(self.model, self.data)
         # ========================================================================
@@ -524,24 +567,6 @@ class RobotArmEnv(gymnasium.Env):
 
         loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
-
-        if self.total_episodes < 150:  # 30k timesteps
-            stage_probs = [0.4, 0.5, 0.1]  # 40% Hold, 50% Hoist, 10% Random
-        elif self.total_episodes < 300:  # 60k timesteps
-            stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
-        else:
-            stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
-        # stage_probs = [0.1, 0.2, 0.7]
-
-        forced_stage = options.get("stage", None) if options else None
-
-        if forced_stage == "hold":
-            stage_probs = [1.0, 0.0, 0.0]  # Forces Hold logic
-        elif forced_stage == "hoist":
-            stage_probs = [0.0, 1.0, 0.0]  # Forces Hoist logic (assuming probs [0.3, 0.4, 0.3])
-        elif forced_stage == "random":
-            stage_probs = [0.0, 0.0, 1.0]  # Forces Random logic
-        stage_roll = np.random.rand()  # Default behavior
 
         if stage_roll < stage_probs[0]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
@@ -605,7 +630,6 @@ class RobotArmEnv(gymnasium.Env):
         self.z_height_achieved = False
 
         self.timesteps = 0
-        self.total_episodes += 1
 
         if self.task != "base":
             obs, fb_obs = self._get_obs()

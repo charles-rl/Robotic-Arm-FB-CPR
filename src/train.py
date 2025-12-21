@@ -186,7 +186,7 @@ def train_agent():
     )
 
     eval_env_specific = DummyVecEnv([lambda: Monitor(
-        RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
+        RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True))])
 
     if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_STATS_PATH):
         eval_env_specific = VecNormalize.load(CHECKPOINT_STATS_PATH, eval_env_specific)
