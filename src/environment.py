@@ -526,8 +526,6 @@ class RobotArmEnv(gymnasium.Env):
         else:
             success_rate = 0.0
 
-        if self.evaluate: success_rate = 1.0
-
         if success_rate < 0.2:
             stage_probs = [0.4, 0.5, 0.1]  # 40% Hold, 50% Hoist, 10% Random
             self.current_curriculum_stage = 0
@@ -537,6 +535,8 @@ class RobotArmEnv(gymnasium.Env):
         else:
             stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
             self.current_curriculum_stage = 2
+
+        if self.evaluate: stage_probs = [0.0, 0.0, 1.0]
         # stage_probs = [0.0, 0.0, 1.0]
 
         forced_stage = options.get("stage", None) if options else None
@@ -553,7 +553,10 @@ class RobotArmEnv(gymnasium.Env):
 
         mujoco.mj_resetData(self.model, self.data)
         # ========================================================================
-        chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
+        forced_pos_idx = 0
+        # chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
+        other_pos_idx = int(np.random.choice(np.delete(np.arange(len(self.cube_start_positions)), forced_pos_idx)))
+        chosen_indices = np.array([forced_pos_idx, other_pos_idx])
         cube_joints = ("cube_a_joint", "cube_b_joint")
         active_cube_idx = 0 if np.random.rand() > 0.5 else 1
         other_cube_idx = 1 - active_cube_idx
@@ -565,7 +568,6 @@ class RobotArmEnv(gymnasium.Env):
         other_cube_name = cube_joints[other_cube_idx]
 
         # loc_name = np.random.choice(list(POSITIONS.keys()))
-        forced_pos_idx = 0
         loc_name = list(POSITIONS.keys())[forced_pos_idx]
         loc_data = POSITIONS[loc_name]
 

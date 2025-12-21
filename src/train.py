@@ -25,7 +25,7 @@ CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
 REWARD_THRESHOLD = 100.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
-LOAD_CHECKPOINT = False
+LOAD_CHECKPOINT = True
 CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
 CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
 
