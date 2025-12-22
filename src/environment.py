@@ -256,9 +256,13 @@ class RobotArmEnv(gymnasium.Env):
 
         left_jaw_force = self.data.sensordata[self.left_jaw_sensor_id]
         right_jaw_force = self.data.sensordata[self.right_jaw_sensor_id]
-        left_force_norm = np.tanh(left_jaw_force / 5.0)
-        right_force_norm = np.tanh(right_jaw_force / 5.0)
-        jaw_forces = np.array([left_force_norm, right_force_norm])
+        # Total grip because sometimes in simulation left force = 0 and right force = 50
+        # Sometimes it is left force = 50 and right force = 50
+        total_force_norm = np.tanh((left_jaw_force + right_jaw_force) / 40.0)
+        # To account for this imbalance we include this feature to help the model
+        # In my testing, the right jaw force is always bigger than the left one
+        balance_norm = np.tanh((right_jaw_force - left_jaw_force) / 20.0)
+        jaw_forces = np.array([total_force_norm, balance_norm])
 
         robot_state = np.concatenate([qpos, qvel, ee_pos_rel, ee_orientation, ee_cvel, jaw_forces])
 
@@ -356,7 +360,17 @@ class RobotArmEnv(gymnasium.Env):
             dist_z = abs(cube_pos[2] - self.dynamic_goal_pos[2])
             is_goal = dist_z < 0.05
 
+            left_jaw_force = self.data.sensordata[self.left_jaw_sensor_id]
+            right_jaw_force = self.data.sensordata[self.right_jaw_sensor_id]
+
+            total_force = left_jaw_force + right_jaw_force
+            has_force = bool(total_force > 20.0)
+            is_near_cube = dist_ee_cube < 0.04
+            is_above_table = ee_pos[2] > (self.base_pos_world[2] + 0.008)
+            is_grasping = has_force and is_near_cube and is_above_table
+
             if self.reward_type == "sparse":
+                # TODO: Fix this
                 reward = 0.0
                 # Using has_solid_grip instead of distance check for robustness
                 if is_lifted: reward += 0.5
@@ -365,6 +379,12 @@ class RobotArmEnv(gymnasium.Env):
 
             elif self.reward_type == "dense":
                 reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
+
+                grasp_reward = 0.0
+                if is_grasping:
+                    grasp_reward = np.tanh(total_force / 20.0)
+                    reach_reward = 1.0
+
                 hoist_reward = np.tanh(7.0 * dist_from_table)
 
                 dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
@@ -375,9 +395,8 @@ class RobotArmEnv(gymnasium.Env):
                 # Gripper not included
                 # action_magnitude = np.linalg.norm(action[:5])
                 # action_penalty = -0.05 * action_magnitude
-                action_penalty = 0.0
 
-                return reach_reward + precision_reward + hoist_reward + action_penalty
+                return reach_reward + precision_reward + hoist_reward + grasp_reward
 
         return 0.0
 
@@ -537,7 +556,7 @@ class RobotArmEnv(gymnasium.Env):
             self.current_curriculum_stage = 2
 
         if self.evaluate: stage_probs = [0.0, 0.0, 1.0]
-        # stage_probs = [0.0, 0.0, 1.0]
+        # stage_probs = [0.33, 0.33, 1.0]
 
         forced_stage = options.get("stage", None) if options else None
 
@@ -554,9 +573,9 @@ class RobotArmEnv(gymnasium.Env):
         mujoco.mj_resetData(self.model, self.data)
         # ========================================================================
         forced_pos_idx = 0
-        # chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
         other_pos_idx = int(np.random.choice(np.delete(np.arange(len(self.cube_start_positions)), forced_pos_idx)))
         chosen_indices = np.array([forced_pos_idx, other_pos_idx])
+        # chosen_indices = np.random.choice(len(self.cube_start_positions), size=2, replace=False)
         cube_joints = ("cube_a_joint", "cube_b_joint")
         active_cube_idx = 0 if np.random.rand() > 0.5 else 1
         other_cube_idx = 1 - active_cube_idx
@@ -567,8 +586,8 @@ class RobotArmEnv(gymnasium.Env):
         active_cube_name = cube_joints[active_cube_idx]
         other_cube_name = cube_joints[other_cube_idx]
 
-        # loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_name = list(POSITIONS.keys())[forced_pos_idx]
+        # loc_name = np.random.choice(list(POSITIONS.keys()))
         loc_data = POSITIONS[loc_name]
 
         if stage_roll < stage_probs[0]:

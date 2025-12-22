@@ -107,7 +107,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 300_000
+        total_timesteps = 100_000
 
     # 1. Initialize WandB
     run = wandb.init(
