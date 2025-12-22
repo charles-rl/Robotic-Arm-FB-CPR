@@ -171,12 +171,18 @@ def train_agent():
                              policy_kwargs=policy_kwargs)
 
         if ALGO == "TQC":
-            model = TQC(**common_params, top_quantiles_to_drop_per_net=2, learning_rate=3e-4, batch_size=batch_size,
-                        buffer_size=buffer_size, train_freq=(100, "step"), gradient_steps=200, ent_coef="auto")
+            model = TQC(**common_params,
+                        top_quantiles_to_drop_per_net=2,
+                        learning_rate=5e-5,
+                        batch_size=batch_size,
+                        buffer_size=buffer_size,
+                        train_freq=(200, "step"),
+                        gradient_steps=200,
+                        ent_coef="auto")
 
     # 4. Callbacks
     raw_reward_callback = RawRewardCallback()
-    wandb_callback = WandbCallback(gradient_save_freq=100, verbose=2)
+    wandb_callback = WandbCallback(gradient_save_freq=200, verbose=2)
 
     # --- REPLACED CheckpointCallback WITH CheckpointWithStatsCallback ---
     checkpoint_callback = CheckpointWithStatsCallback(

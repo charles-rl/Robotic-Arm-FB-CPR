@@ -399,7 +399,7 @@ class RobotArmEnv(gymnasium.Env):
                 # Gripper not included (ONLY EE CONTROL)
                 # action_magnitude = np.linalg.norm(action[:3])
                 # action_penalty = -0.05 * action_magnitude
-
+                print(f"Reach: {reach_reward}, Precision: {precision_reward}, Hoist: {hoist_reward}, Grasp: {grasp_reward}")
                 return reach_reward + precision_reward + hoist_reward + grasp_reward
 
         return 0.0
@@ -550,19 +550,22 @@ class RobotArmEnv(gymnasium.Env):
             success_rate = 0.0
 
         if success_rate < 0.2:
-            stage_probs = [0.4, 0.25, 0.25, 0.1]  # 40% Hold, 25% Hoist, 25% Pre-Hoist, 10% Random
+            stage_probs = [0.4, 0.4, 0.2, 0.0]  # 40% Hold, 40% Hoist, 15% Pre-Hoist, 5% Random
             self.current_curriculum_stage = 0
-        elif success_rate < 0.6:
-            stage_probs = [0.2, 0.15, 0.15, 0.5]  # 20% Hold, 15% Hoist, 15% Pre-Hoist, 50% Random
+        elif success_rate < 0.4:
+            stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
             self.current_curriculum_stage = 1
+        elif success_rate < 0.6:
+            stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
+            self.current_curriculum_stage = 2
         else:
             stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
-            self.current_curriculum_stage = 2
+            self.current_curriculum_stage = 3
 
         super().reset(seed=seed)
 
         if self.evaluate: stage_probs = [0.0, 0.0, 0.0, 1.0]
-        # stage_probs = [0.33, 0.33, 0.33, 1.0]
+        # stage_probs = [0.0, 0.0, 0.0, 1.0]
         stage_roll = np.random.rand()  # Default behavior
 
         mujoco.mj_resetData(self.model, self.data)
