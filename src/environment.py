@@ -617,25 +617,25 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[5] = self.joint_max[5]  # open
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
         else:
-            pos_a = self.cube_start_positions[chosen_indices[0]]
-            pos_b = self.cube_start_positions[chosen_indices[1]]
+            self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
+            self._set_cube_pos_quat(active_cube_name, self.cube_start_positions[forced_pos_idx], np.array([1, 0, 0, 0]))
 
-            # Set Cube A
-            # Randomize Orientation
-            theta = np.random.uniform(-np.pi, np.pi)
-            # quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-            quat_a = np.array([1, 0, 0, 0])
-            self._set_cube_pos_quat("cube_a_joint", pos_a, quat_a)
-
-            # Set Cube B2
-            theta = np.random.uniform(-np.pi, np.pi)
-            # quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-            quat_b = np.array([1, 0, 0, 0])
-            self._set_cube_pos_quat("cube_b_joint", pos_b, quat_b)
-
+            qpos = loc_data["pretable_qpos"].copy()
             self.data.qpos[:6] = self._arm_start_pos
-            self.data.qvel[:6] = 0.0  # no arm movement
-            self.data.ctrl[:6] = self.data.qpos[:6].copy()
+            self.data.qvel[:6] = 0.0
+            self.data.ctrl[:6] = qpos
+            self.data.ctrl[5] = self.joint_max[5]  # open
+            self.dynamic_goal_pos = np.array(loc_data["air_pos"])
+
+            # theta = np.random.uniform(-np.pi, np.pi)
+            # # quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # quat_a = np.array([1, 0, 0, 0])
+            # self._set_cube_pos_quat("cube_a_joint", pos_a, quat_a)
+            #
+            # theta = np.random.uniform(-np.pi, np.pi)
+            # # quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # quat_b = np.array([1, 0, 0, 0])
+            # self._set_cube_pos_quat("cube_b_joint", pos_b, quat_b)
 
         # ========================================================================
         # Update Kinematics
@@ -648,8 +648,8 @@ class RobotArmEnv(gymnasium.Env):
         for _ in range(10):
             mujoco.mj_step(self.model, self.data)
 
-        if stage_roll >= stage_probs[0] + stage_probs[1]:
-            self._sample_target()
+        # if stage_roll >= stage_probs[0] + stage_probs[1]:
+        #     self._sample_target()
 
         self.base_pos_world = self.data.body("base").xpos
         self.last_action_smoothed = np.zeros(self.action_space.shape[0])
