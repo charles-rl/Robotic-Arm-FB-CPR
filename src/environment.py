@@ -11,7 +11,9 @@ POSITIONS = {
         "air_pos": [-0.25, 0.0, 0.63],
         "air_qpos": np.array([0.0553, -1.5220, 0.9610, 0.5584, 1.6101, 0.4974]),
         "table_pos": [-0.25, 0.0, 0.43],
-        "table_qpos": np.array([0.1299, -0.9367, 1.5517, 0.2717, 1.7114, 0.9723])
+        "table_qpos": np.array([0.0909, -1.0126, 1.5656, 0.3595, 1.5721, 0.6596]),
+        "pretable_pos": [-0.25, 0.0, 0.43],
+        "pretable_qpos": np.array([0.0861, -1.4377, 1.5888, 0.5182, 1.5713, 0.6376])
     },
     "Left": {
         "air_pos": [-0.25, 0.15, 0.63],
@@ -381,19 +383,21 @@ class RobotArmEnv(gymnasium.Env):
                 reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
 
                 grasp_reward = 0.0
+                hoist_reward = 0.0
+                precision_reward = 0.0
                 if is_grasping:
                     grasp_reward = np.tanh(total_force / 20.0)
                     reach_reward = 1.0
 
-                hoist_reward = np.tanh(7.0 * dist_from_table)
+                    hoist_reward = np.tanh(7.0 * dist_from_table)
 
-                dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
-                if dist_to_goal < 0.05:
-                    precision_reward += 2.0
+                    dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                    precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
+                    if dist_to_goal < 0.05:
+                        precision_reward += 2.0
 
-                # Gripper not included
-                # action_magnitude = np.linalg.norm(action[:5])
+                # Gripper not included (ONLY EE CONTROL)
+                # action_magnitude = np.linalg.norm(action[:3])
                 # action_penalty = -0.05 * action_magnitude
 
                 return reach_reward + precision_reward + hoist_reward + grasp_reward
@@ -546,28 +550,19 @@ class RobotArmEnv(gymnasium.Env):
             success_rate = 0.0
 
         if success_rate < 0.2:
-            stage_probs = [0.4, 0.5, 0.1]  # 40% Hold, 50% Hoist, 10% Random
+            stage_probs = [0.4, 0.25, 0.25, 0.1]  # 40% Hold, 25% Hoist, 25% Pre-Hoist, 10% Random
             self.current_curriculum_stage = 0
         elif success_rate < 0.6:
-            stage_probs = [0.2, 0.3, 0.5]  # 20% Hold, 30% Hoist, 50% Random
+            stage_probs = [0.2, 0.15, 0.15, 0.5]  # 20% Hold, 15% Hoist, 15% Pre-Hoist, 50% Random
             self.current_curriculum_stage = 1
         else:
-            stage_probs = [0.1, 0.2, 0.7]  # 10% Hold, 20% Hoist, 70% Random
+            stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
             self.current_curriculum_stage = 2
-
-        if self.evaluate: stage_probs = [0.0, 0.0, 1.0]
-        # stage_probs = [0.33, 0.33, 1.0]
-
-        forced_stage = options.get("stage", None) if options else None
 
         super().reset(seed=seed)
 
-        if forced_stage == "hold":
-            stage_probs = [1.0, 0.0, 0.0]  # Forces Hold logic
-        elif forced_stage == "hoist":
-            stage_probs = [0.0, 1.0, 0.0]  # Forces Hoist logic (assuming probs [0.3, 0.4, 0.3])
-        elif forced_stage == "random":
-            stage_probs = [0.0, 0.0, 1.0]  # Forces Random logic
+        if self.evaluate: stage_probs = [0.0, 0.0, 0.0, 1.0]
+        # stage_probs = [0.33, 0.33, 0.33, 1.0]
         stage_roll = np.random.rand()  # Default behavior
 
         mujoco.mj_resetData(self.model, self.data)
@@ -600,7 +595,6 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_min[5]  # auto close
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
-
         elif stage_roll < stage_probs[0] + stage_probs[1]:
             self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
             self._set_cube_pos_quat(active_cube_name, loc_data["table_pos"], np.array([1, 0, 0, 0]))
@@ -610,6 +604,17 @@ class RobotArmEnv(gymnasium.Env):
             self.data.qvel[:6] = 0.0
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_max[5] # open
+            self.dynamic_goal_pos = np.array(loc_data["air_pos"])
+
+        elif stage_roll < stage_probs[0] + stage_probs[1] + stage_probs[2]:
+            self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
+            self._set_cube_pos_quat(active_cube_name, loc_data["pretable_pos"], np.array([1, 0, 0, 0]))
+
+            qpos = loc_data["pretable_qpos"].copy()
+            self.data.qpos[:6] = qpos
+            self.data.qvel[:6] = 0.0
+            self.data.ctrl[:6] = qpos
+            self.data.ctrl[5] = self.joint_max[5]  # open
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
         else:
             pos_a = self.cube_start_positions[chosen_indices[0]]

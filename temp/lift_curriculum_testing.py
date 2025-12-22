@@ -30,7 +30,7 @@ perfect_grasp_qpos = np.array([0.3337, 0.0156, 0.2294, -0.3951, 1.5766, 0.2972])
 Hoist:
 Center
 Cube Position (Table): [-0.25, 0.0, 0.43]
-perfect_grasp_qpos = np.array([0.1299, -0.9367, 1.5517, 0.2717, 1.7114, 0.9723])
+perfect_grasp_qpos = np.array([0.0909, -1.0126, 1.5656, 0.3595, 1.5721, 0.6596])
 
 Left
 Cube Position (Air): [-0.25, 0.15, 0.43]
@@ -52,7 +52,7 @@ perfect_grasp_qpos = np.array([0.3746, 0.8199, 0.3387, -0.9249, 1.6066, 0.9172])
 Pre-Grasp
 Center
 Cube Position (Table): [-0.25, 0.0, 0.43]
-perfect_grasp_qpos = np.array([0.1011, -1.7453, 1.4979, 0.9901, 1.5458, 0.5405])
+perfect_grasp_qpos = np.array([0.0861, -1.4377, 1.5888, 0.5182, 1.5713, 0.6376])
 
 Left
 Cube Position (Air): [-0.25, 0.15, 0.43]
@@ -344,7 +344,7 @@ def laboratory_mode():
 
     # Cube Control State
     cube_frozen = True  # Starts floating
-    cube_target_pos = np.array([-0.1, 0.1, 0.63])  # The "Air" position you want to test
+    cube_target_pos = np.array([-0.25, 0.0, 0.43])  # The "Air" position you want to test
 
     # Manual Joint Offsets (For Wrist/Gripper)
     # [ShoulderPan, ShoulderLift, Elbow, WristFlex, WristRoll, Gripper]
@@ -386,7 +386,7 @@ def laboratory_mode():
 
             # --- 2. ROBOT CONTROL ---
             # A. XYZ IK Target Update
-            move_speed = 0.0005
+            move_speed = 0.00025
             if keys[pygame.K_w]: target_ee_pos[0] += move_speed
             if keys[pygame.K_s]: target_ee_pos[0] -= move_speed
             if keys[pygame.K_a]: target_ee_pos[1] += move_speed
@@ -475,4 +475,4 @@ def laboratory_mode():
 
 
 if __name__ == "__main__":
-    laboratory_mode_with_sensors()
+    laboratory_mode()
