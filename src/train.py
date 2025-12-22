@@ -244,10 +244,10 @@ def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False):
     # 1. Load Env
     if only_visualize:
         env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
+            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True)])
     else:
         env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE)])
+            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True)])
     max_steps = env_.get_attr("max_episode_steps")[0]
 
     # 2. Load Normalization Stats
