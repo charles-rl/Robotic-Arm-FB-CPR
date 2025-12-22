@@ -107,7 +107,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 200_000
+        total_timesteps = 300_000
 
     # 1. Initialize WandB
     run = wandb.init(
@@ -151,7 +151,7 @@ def train_agent():
             env=env,
             tensorboard_log=f"runs/{run.id}",
             custom_objects={
-                "learning_rate": 5e-5,  # Lower LR for fine-tuning (optional, remove to keep original)
+                "learning_rate": 1e-5,  # Lower LR for fine-tuning (optional, remove to keep original)
                 "ent_coef": "auto_0.1"  # Reset entropy to encourage some new exploration
             }
         )
@@ -173,7 +173,7 @@ def train_agent():
         if ALGO == "TQC":
             model = TQC(**common_params,
                         top_quantiles_to_drop_per_net=2,
-                        learning_rate=5e-5,
+                        learning_rate=1e-4,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),

@@ -380,27 +380,55 @@ class RobotArmEnv(gymnasium.Env):
                 return reward
 
             elif self.reward_type == "dense":
-                reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
+                # reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
+                #
+                # grasp_reward = 0.0
+                # hoist_reward = 0.0
+                # precision_reward = 0.0
+                # if is_grasping:
+                #     grasp_reward = np.tanh(total_force / 20.0)
+                #     reach_reward = 1.0
+                #
+                #     hoist_reward = np.tanh(7.0 * dist_from_table)
+                #     if dist_from_table > 0.08:
+                #         grasp_reward = 1.0
+                #
+                #     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                #     precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
+                #     if dist_to_goal < 0.05:
+                #         hoist_reward = 1.0
+                #         precision_reward += 2.0
+                #
+                # # Gripper not included (ONLY EE CONTROL)
+                # # action_magnitude = np.linalg.norm(action[:3])
+                # # action_penalty = -0.05 * action_magnitude
+                # print(f"Reach: {reach_reward}, Precision: {precision_reward}, Hoist: {hoist_reward}, Grasp: {grasp_reward}")
+                # return reach_reward + precision_reward + hoist_reward + grasp_reward
 
-                grasp_reward = 0.0
+                # Will be 1 if within 0.03 or so
+                reach_reward = np.clip(1.0 - np.tanh(10.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
+
+                # Will rise sharply after 20N, so 50N is 0.99
+                grasp_signal = 0.5 * (1.0 + np.tanh(0.2 * (total_force - 37.0)))
+                near_signal = np.clip(1.0 - np.tanh(15.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
+                # above_table_signal = float(ee_pos[2] > (self.base_pos_world[2] + 0.008))
+                above_table_signal = 0.5 * (1.0 + np.tanh(1000.0 * (ee_pos[2] - self.base_pos_world[2] + 0.008)))
+                is_grasping_signal = near_signal * above_table_signal
+
+                grasp_reward = grasp_signal * is_grasping_signal
+
                 hoist_reward = 0.0
                 precision_reward = 0.0
-                if is_grasping:
-                    grasp_reward = np.tanh(total_force / 20.0)
-                    reach_reward = 1.0
-
+                is_above_table = bool(ee_pos[2] > (self.base_pos_world[2] + 0.008))
+                if is_above_table:
                     hoist_reward = np.tanh(7.0 * dist_from_table)
 
                     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                    precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
-                    if dist_to_goal < 0.05:
-                        precision_reward += 2.0
+                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (2.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
 
-                # Gripper not included (ONLY EE CONTROL)
-                # action_magnitude = np.linalg.norm(action[:3])
-                # action_penalty = -0.05 * action_magnitude
-                print(f"Reach: {reach_reward}, Precision: {precision_reward}, Hoist: {hoist_reward}, Grasp: {grasp_reward}")
-                return reach_reward + precision_reward + hoist_reward + grasp_reward
+                total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward
+
+                return total_reward
 
         return 0.0
 
@@ -550,7 +578,7 @@ class RobotArmEnv(gymnasium.Env):
             success_rate = 0.0
 
         if success_rate < 0.2:
-            stage_probs = [0.4, 0.4, 0.2, 0.0]  # 40% Hold, 40% Hoist, 15% Pre-Hoist, 5% Random
+            stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
             self.current_curriculum_stage = 0
         elif success_rate < 0.4:
             stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random

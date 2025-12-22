@@ -236,14 +236,14 @@ class Logger:
             d["episode_success+avg_metaworld"] = metaworld_success
             print(
                 colored(
-                    f'  {"metaworld":<22}\tR: {metaworld_reward:.01f}',
+                    f'  {"metaworld_fb":<22}\tR: {metaworld_reward:.01f}',
                     "yellow",
                     attrs=["bold"],
                 )
             )
             print(
                 colored(
-                    f'  {"metaworld":<22}\tS: {metaworld_success:.02f}',
+                    f'  {"metaworld_fb":<22}\tS: {metaworld_success:.02f}',
                     "yellow",
                     attrs=["bold"],
                 )
