@@ -414,16 +414,21 @@ class RobotArmEnv(gymnasium.Env):
                 near_signal = np.clip(1.0 - np.tanh(15.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
                 # above_table_signal = float(ee_pos[2] > (self.base_pos_world[2] + 0.008))
                 above_table_signal = 0.5 * (1.0 + np.tanh(500.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.008))))
-                grasp_reward = grasp_signal * near_signal
+                grasp_reward = grasp_signal * near_signal * above_table_signal
 
-                hoist_reward = np.tanh(7.0 * dist_from_table)
+                hoist_reward = 0.0
+                precision_reward = 0.0
+                if ee_pos[2] > (self.base_pos_world[2] + 0.008):
+                    hoist_reward = np.tanh(7.0 * dist_from_table)
 
-                dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (2.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
-                unlocked_reward = grasp_reward * above_table_signal * (1.0 + hoist_reward + precision_reward)
+                    dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
+                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (2.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
+                # unlocked_reward = grasp_reward * above_table_signal * (1.0 + hoist_reward + precision_reward)
 
                 # print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
-                total_reward = reach_reward + unlocked_reward
+                # total_reward = reach_reward + unlocked_reward
+
+                total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward
 
                 return total_reward
 

@@ -25,7 +25,7 @@ CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
 REWARD_THRESHOLD = 100.0
 RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
 
-LOAD_CHECKPOINT = True
+LOAD_CHECKPOINT = False
 CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
 CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
 
@@ -172,8 +172,9 @@ def train_agent():
 
         if ALGO == "TQC":
             model = TQC(**common_params,
-                        top_quantiles_to_drop_per_net=2,
+                        top_quantiles_to_drop_per_net=8,
                         learning_rate=1e-4,
+                        gamma=0.99,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),
