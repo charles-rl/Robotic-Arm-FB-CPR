@@ -104,7 +104,7 @@ def check_grasp_heuristic(model, data, ee_pos, cube_pos, table_height):
     # The gripper tips must not be grinding against the floor.
     # ee_pos is usually the center of the gripper base/fingers.
     # Check if Z is safely above the table.
-    is_above_table = ee_pos[2] > (table_height - 0.022)  # 1cm tolerance
+    is_above_table = ee_pos[2] > (0.4 + 0.012)  # 1cm tolerance
 
     # 5. FINAL LOGIC
     # We are grasping IF: We have force AND we are near cube AND we aren't humping the table
@@ -475,4 +475,4 @@ def laboratory_mode():
 
 
 if __name__ == "__main__":
-    laboratory_mode()
+    laboratory_mode_with_sensors()

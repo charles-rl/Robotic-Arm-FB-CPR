@@ -413,8 +413,8 @@ class RobotArmEnv(gymnasium.Env):
                 grasp_signal = 0.5 * (1.0 + np.tanh(0.15 * (maximum_jaw_force - 20.0)))
                 near_signal = np.clip(1.0 - np.tanh(15.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
                 # above_table_signal = float(ee_pos[2] > (self.base_pos_world[2] + 0.008))
-                above_table_signal = 0.5 * (1.0 + np.tanh(500.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.008))))
-                grasp_reward = grasp_signal * near_signal * above_table_signal
+                above_table_signal = 0.5 * (1.0 + np.tanh(300.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.01))))
+                grasp_reward = 3.0 * grasp_signal * near_signal * above_table_signal
 
                 hoist_reward = 0.0
                 precision_reward = 0.0
@@ -422,7 +422,7 @@ class RobotArmEnv(gymnasium.Env):
                     hoist_reward = np.tanh(7.0 * dist_from_table)
 
                     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (2.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
+                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (1.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
                 # unlocked_reward = grasp_reward * above_table_signal * (1.0 + hoist_reward + precision_reward)
 
                 # print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
@@ -579,13 +579,13 @@ class RobotArmEnv(gymnasium.Env):
         else:
             success_rate = 0.0
 
-        if success_rate < 0.5:
+        if success_rate < 0.2:
             stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
             self.current_curriculum_stage = 0
-        elif success_rate < 0.6:
+        elif success_rate < 0.4:
             stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
             self.current_curriculum_stage = 1
-        elif success_rate < 0.7:
+        elif success_rate < 0.6:
             stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
             self.current_curriculum_stage = 2
         else:

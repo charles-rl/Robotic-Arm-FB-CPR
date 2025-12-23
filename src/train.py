@@ -172,21 +172,18 @@ def train_agent():
 
         if ALGO == "TQC":
             model = TQC(**common_params,
-                        top_quantiles_to_drop_per_net=8,
+                        top_quantiles_to_drop_per_net=5,
                         learning_rate=5e-5,
-                        gamma=0.99,
+                        gamma=0.998,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),
                         gradient_steps=200,
-                        target_entropy=-3.5,
-                        ent_coef="auto_0.1")
+                        ent_coef="auto")
 
         if ALGO == "CrossQ":
             model = CrossQ(
                 **common_params,
-                policy="MlpPolicy",
-                env=env,
                 learning_rate=1e-3,  # CrossQ works best with 1e-3 or 7e-4
                 batch_size=1024,  # Increased for Batch Norm stability
                 buffer_size=buffer_size,
