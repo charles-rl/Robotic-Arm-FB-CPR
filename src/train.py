@@ -162,7 +162,7 @@ def train_agent():
     else:
         print("✨ Initializing New Model")
         # ... (Your original initialization code) ...
-        policy_kwargs = dict(net_arch=[256, 256])
+        policy_kwargs = dict(net_arch=[400, 300])
         if ALGO == "TQC":
             policy_kwargs["use_sde"] = True
             policy_kwargs["log_std_init"] = -2
@@ -173,8 +173,8 @@ def train_agent():
         if ALGO == "TQC":
             model = TQC(**common_params,
                         top_quantiles_to_drop_per_net=2,
-                        learning_rate=5e-5,
-                        gamma=0.998,
+                        learning_rate=1e-5,
+                        gamma=0.999,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),
