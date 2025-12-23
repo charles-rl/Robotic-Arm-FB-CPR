@@ -41,7 +41,7 @@ class FBDataGenerator:
             policy = self.policy_map[task_name]()
 
             for ep in tqdm(range(self.ep_per_task)):
-                task = np.random.choice(mt1.train_tasks)
+                task = random.choice(mt1.train_tasks)
                 env.set_task(task)
 
                 obs, _ = env.reset()

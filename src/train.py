@@ -172,7 +172,7 @@ def train_agent():
 
         if ALGO == "TQC":
             model = TQC(**common_params,
-                        top_quantiles_to_drop_per_net=5,
+                        top_quantiles_to_drop_per_net=2,
                         learning_rate=5e-5,
                         gamma=0.998,
                         batch_size=batch_size,
@@ -253,16 +253,16 @@ def train_agent():
     env.close()
 
 
-def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False):
+def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False, evaluate_type: str = True):
     print(f"\n--- 4. Evaluating Agent: {TASK} ({ALGO}) ---")
 
     # 1. Load Env
     if only_visualize:
         env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True)])
+            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=evaluate_type)])
     else:
         env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True)])
+            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=evaluate_type)])
     max_steps = env_.get_attr("max_episode_steps")[0]
 
     # 2. Load Normalization Stats
@@ -287,13 +287,15 @@ def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False):
         ModelClass = PPO
 
     model = ModelClass.load(f"../models/{ALGO.lower()}_so101_{TASK}")
+    if evaluate_type is True:
+        evaluate_type = "eval"
 
     # 4. Loop
     if not find_best:
         for ep in range(episodes):
             frames = []
             obs = env.reset()
-            video_path = f"eval_ep_{ep}.mp4"
+            video_path = f"{evaluate_type}_{ep}.mp4"
             print(f"Simulating Episode {ep + 1}/{episodes}...")
 
             for i in range(max_steps + 10):
@@ -339,4 +341,7 @@ if __name__ == "__main__":
     if not EVAL:
         train_agent()
     else:
-        evaluate(best_reward=REWARD_THRESHOLD, find_best=False)
+        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hold")
+        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hoist")
+        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="prehoist")
+        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type=True)

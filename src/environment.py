@@ -413,21 +413,22 @@ class RobotArmEnv(gymnasium.Env):
                 grasp_signal = 0.5 * (1.0 + np.tanh(0.15 * (maximum_jaw_force - 20.0)))
                 near_signal = np.clip(1.0 - np.tanh(15.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
                 # above_table_signal = float(ee_pos[2] > (self.base_pos_world[2] + 0.008))
-                above_table_signal = 0.5 * (1.0 + np.tanh(300.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.01))))
-                grasp_reward = 3.0 * grasp_signal * near_signal * above_table_signal
+                # above_table_signal = 0.5 * (1.0 + np.tanh(300.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.01))))
 
+                grasp_reward = 0.0
                 hoist_reward = 0.0
                 precision_reward = 0.0
                 if ee_pos[2] > (self.base_pos_world[2] + 0.008):
+                    grasp_reward = 3.0 * grasp_signal * near_signal
+
                     hoist_reward = np.tanh(7.0 * dist_from_table)
 
                     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
                     precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (1.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
                 # unlocked_reward = grasp_reward * above_table_signal * (1.0 + hoist_reward + precision_reward)
 
-                # print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
+                print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
                 # total_reward = reach_reward + unlocked_reward
-
                 total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward
 
                 return total_reward
@@ -594,7 +595,14 @@ class RobotArmEnv(gymnasium.Env):
 
         super().reset(seed=seed)
 
-        if self.evaluate: stage_probs = [0.0, 0.0, 0.0, 1.0]
+        if self.evaluate == "hold":
+            stage_probs = [1.0, 0.0, 0.0, 0.0]
+        elif self.evaluate == "hoist":
+            stage_probs = [0.0, 1.0, 0.0, 0.0]
+        elif self.evaluate == "prehoist":
+            stage_probs = [0.0, 0.0, 1.0, 0.0]
+        elif self.evaluate is True:
+            stage_probs = [0.0, 0.0, 0.0, 1.0]
         # stage_probs = [0.0, 0.0, 0.0, 1.0]
         stage_roll = np.random.rand()  # Default behavior
 
