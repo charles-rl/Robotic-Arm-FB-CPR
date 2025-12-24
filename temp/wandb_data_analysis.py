@@ -5,7 +5,7 @@ import numpy as np
 # Replace with your info
 ENTITY = "charlessosmena0-academia-sinica"
 PROJECT = "so101-lift-fb"
-RUN_ID = "h5pokvdj"  # The 8-character ID (e.g., 'ab12cd34')
+RUN_ID = "ob6q1goe"  # The 8-character ID (e.g., 'ab12cd34')
 
 api = wandb.Api()
 run = api.run(f"{ENTITY}/{PROJECT}/{RUN_ID}")

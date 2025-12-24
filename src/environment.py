@@ -329,7 +329,7 @@ class RobotArmEnv(gymnasium.Env):
             target_cube_id = self.cube_a_id if self.object_focus_idx == 0 else self.cube_b_id
             cube_pos_world = self.data.xpos[target_cube_id].copy()
 
-            lift_height = np.random.uniform(0.19, 0.21)
+            lift_height = np.random.uniform(0.15, 0.25)
 
             self.dynamic_goal_pos = cube_pos_world.copy()
             self.dynamic_goal_pos[2] += lift_height
@@ -380,31 +380,6 @@ class RobotArmEnv(gymnasium.Env):
                 return reward
 
             elif self.reward_type == "dense":
-                # reach_reward = 1.0 - np.tanh(10.0 * dist_ee_cube)
-                #
-                # grasp_reward = 0.0
-                # hoist_reward = 0.0
-                # precision_reward = 0.0
-                # if is_grasping:
-                #     grasp_reward = np.tanh(total_force / 20.0)
-                #     reach_reward = 1.0
-                #
-                #     hoist_reward = np.tanh(7.0 * dist_from_table)
-                #     if dist_from_table > 0.08:
-                #         grasp_reward = 1.0
-                #
-                #     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                #     precision_reward = 1.0 - np.tanh(10.0 * dist_to_goal)
-                #     if dist_to_goal < 0.05:
-                #         hoist_reward = 1.0
-                #         precision_reward += 2.0
-                #
-                # # Gripper not included (ONLY EE CONTROL)
-                # # action_magnitude = np.linalg.norm(action[:3])
-                # # action_penalty = -0.05 * action_magnitude
-                # print(f"Reach: {reach_reward}, Precision: {precision_reward}, Hoist: {hoist_reward}, Grasp: {grasp_reward}")
-                # return reach_reward + precision_reward + hoist_reward + grasp_reward
-
                 # Will be 1 if within 0.03 or so
                 reach_reward = np.clip(1.0 - np.tanh(10.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
 
@@ -412,24 +387,21 @@ class RobotArmEnv(gymnasium.Env):
                 maximum_jaw_force = max(left_jaw_force, right_jaw_force)
                 grasp_signal = 0.5 * (1.0 + np.tanh(0.15 * (maximum_jaw_force - 20.0)))
                 near_signal = np.clip(1.0 - np.tanh(15.0 * (dist_ee_cube - 0.03)), 0.0, 1.0)
-                # above_table_signal = float(ee_pos[2] > (self.base_pos_world[2] + 0.008))
-                # above_table_signal = 0.5 * (1.0 + np.tanh(300.0 * (ee_pos[2] - (self.base_pos_world[2] + 0.01))))
 
                 grasp_reward = 0.0
                 hoist_reward = 0.0
                 precision_reward = 0.0
                 if ee_pos[2] > (self.base_pos_world[2] + 0.008):
-                    grasp_reward = 3.0 * grasp_signal * near_signal
+                    grasp_reward = grasp_signal * near_signal
                     hoist_reward = np.tanh(7.0 * dist_from_table)
 
                     dist_to_goal = np.linalg.norm(cube_pos - self.dynamic_goal_pos)
-                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (1.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
-                # unlocked_reward = grasp_reward * above_table_signal * (1.0 + hoist_reward + precision_reward)
+                    precision_reward = (1.0 - np.tanh(10.0 * dist_to_goal)) + (3.0 * (1.0 - np.tanh(50.0 * dist_to_goal)))
 
                 # print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
-                # total_reward = reach_reward + unlocked_reward
-                total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward
-
+                # Only the position action is penalized
+                action_penalty = -0.05 * np.linalg.norm(action[:3])
+                total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward + action_penalty
                 return total_reward
 
         return 0.0
@@ -657,25 +629,18 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[5] = self.joint_max[5]  # open
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
         else:
-            self._set_cube_pos_quat(other_cube_name, self.cube_neutral_start_position, np.array([1, 0, 0, 0]))
-            self._set_cube_pos_quat(active_cube_name, self.cube_start_positions[forced_pos_idx], np.array([1, 0, 0, 0]))
+            theta = np.random.uniform(-np.pi, np.pi)
+            active_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            theta = np.random.uniform(-np.pi, np.pi)
+            other_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            self._set_cube_pos_quat(other_cube_name, self.cube_start_positions[other_pos_idx], other_quat)
+            self._set_cube_pos_quat(active_cube_name, self.cube_start_positions[forced_pos_idx], active_quat)
 
             qpos = loc_data["pretable_qpos"].copy()
             self.data.qpos[:6] = self._arm_start_pos
             self.data.qvel[:6] = 0.0
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_max[5]  # open
-            self.dynamic_goal_pos = np.array(loc_data["air_pos"])
-
-            # theta = np.random.uniform(-np.pi, np.pi)
-            # # quat_a = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-            # quat_a = np.array([1, 0, 0, 0])
-            # self._set_cube_pos_quat("cube_a_joint", pos_a, quat_a)
-            #
-            # theta = np.random.uniform(-np.pi, np.pi)
-            # # quat_b = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-            # quat_b = np.array([1, 0, 0, 0])
-            # self._set_cube_pos_quat("cube_b_joint", pos_b, quat_b)
 
         # ========================================================================
         # Update Kinematics
@@ -688,8 +653,8 @@ class RobotArmEnv(gymnasium.Env):
         for _ in range(10):
             mujoco.mj_step(self.model, self.data)
 
-        # if stage_roll >= stage_probs[0] + stage_probs[1]:
-        #     self._sample_target()
+        if stage_roll >= stage_probs[0] + stage_probs[1] + stage_probs[2]:
+            self._sample_target()
 
         self.base_pos_world = self.data.body("base").xpos
         self.last_action_smoothed = np.zeros(self.action_space.shape[0])

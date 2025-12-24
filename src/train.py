@@ -19,7 +19,7 @@ from environment import RobotArmEnv
 
 # Configuration
 DEBUG = False
-EVAL = False
+EVAL = True
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
 CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
@@ -136,7 +136,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 500_000
+        total_timesteps = 300_000
 
     # 1. Initialize WandB
     run = wandb.init(
@@ -263,7 +263,7 @@ def train_agent():
         wandb_callback,
         checkpoint_callback,
         eval_callback,
-        reset_callback
+        # reset_callback
     ])
 
     print("--- 3. Starting Training ---")
@@ -372,7 +372,7 @@ if __name__ == "__main__":
     if not EVAL:
         train_agent()
     else:
-        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hold")
-        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hoist")
-        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="prehoist")
-        evaluate(episodes=2, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type=True)
+        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hold")
+        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hoist")
+        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="prehoist")
+        evaluate(episodes=3, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type=True)
