@@ -5,6 +5,7 @@ import mujoco.viewer
 import imageio
 import wandb
 import os
+import torch
 
 from sb3_contrib import TQC, CrossQ
 from stable_baselines3 import SAC, PPO
@@ -44,6 +45,34 @@ class RawRewardCallback(BaseCallback):
                     "rollout/raw_episode_length": info['episode']['l'],
                     "env_steps": self.num_timesteps
                 })
+        return True
+
+
+class EntropyResetCallback(BaseCallback):
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        # 1. Check if ANY of the vectorized environments signaled a reset
+        # 'self.locals' contains 'infos', which is a list of dicts for each env
+        for info in self.locals["infos"]:
+            current_curriculum_stage = info.get("curriculum_stage", False)
+            if current_curriculum_stage and (current_curriculum_stage >= 2):
+                self.current_curriculum_stage = current_curriculum_stage
+                if self.verbose > 0:
+                    print("Stage change detected! Resetting entropy temperature...")
+
+                # 2. Access the SAC model internal log_ent_coef
+                # This resets the temperature (alpha) to e.g., 1.0 (log(1.0) = 0)
+                with torch.no_grad():
+                    self.model.log_ent_coef.fill_(0.0)
+
+                    # 3. Optional: Reset the entropy optimizer to clear momentum
+                # This prevents the optimizer from immediately "diving" back to low entropy
+                self.model.ent_coef_optimizer = torch.optim.Adam(
+                    [self.model.log_ent_coef],
+                    lr=self.model.learning_rate
+                )
         return True
 
 
@@ -107,7 +136,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 300_000
+        total_timesteps = 500_000
 
     # 1. Initialize WandB
     run = wandb.init(
@@ -162,7 +191,7 @@ def train_agent():
     else:
         print("✨ Initializing New Model")
         # ... (Your original initialization code) ...
-        policy_kwargs = dict(net_arch=[400, 300])
+        policy_kwargs = dict(net_arch=[512, 512])
         if ALGO == "TQC":
             policy_kwargs["use_sde"] = True
             policy_kwargs["log_std_init"] = -2
@@ -173,8 +202,8 @@ def train_agent():
         if ALGO == "TQC":
             model = TQC(**common_params,
                         top_quantiles_to_drop_per_net=2,
-                        learning_rate=1e-5,
-                        gamma=0.999,
+                        learning_rate=3e-4,
+                        gamma=0.99,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),
@@ -227,12 +256,14 @@ def train_agent():
         render=False,
         verbose=1,
     )
+    reset_callback = EntropyResetCallback(verbose=1)
 
     callback_group = CallbackList([
         raw_reward_callback,
         wandb_callback,
         checkpoint_callback,
-        eval_callback
+        eval_callback,
+        reset_callback
     ])
 
     print("--- 3. Starting Training ---")

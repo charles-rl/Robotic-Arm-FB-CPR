@@ -786,7 +786,7 @@ class RobotArmEnv(gymnasium.Env):
         """
         # Concatenate full qpos and qvel (flattens them into 1D array)
         physics_state = np.concatenate([self.data.qpos.flat, self.data.qvel.flat])
-        return {"physics": physics_state}
+        return {"physics": physics_state, "curriculum_stage": self.current_curriculum_stage}
 
     def set_physics_state(self, state_vector):
         """
