@@ -402,7 +402,6 @@ class RobotArmEnv(gymnasium.Env):
                 # print(f"reach: {reach_reward}\tgrasp: {grasp_reward}\thoist: {hoist_reward}\tprecision: {precision_reward}")
                 # Only the position action is penalized
                 action_penalty = -0.05 * np.linalg.norm(action[:3])
-                action_penalty = 0.0
                 total_reward = reach_reward + grasp_reward + hoist_reward + precision_reward + action_penalty
                 return total_reward
 
@@ -631,10 +630,12 @@ class RobotArmEnv(gymnasium.Env):
             self.data.ctrl[5] = self.joint_max[5]  # open
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
         else:
-            theta = np.random.uniform(-np.pi, np.pi)
-            active_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
-            theta = np.random.uniform(-np.pi, np.pi)
-            other_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # theta = np.random.uniform(-np.pi, np.pi)
+            # active_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            # theta = np.random.uniform(-np.pi, np.pi)
+            # other_quat = np.array([np.cos(theta / 2), 0, 0, np.sin(theta / 2)])
+            other_quat = np.array([1, 0, 0, 0])
+            active_quat = np.array([1, 0, 0, 0])
             self._set_cube_pos_quat(other_cube_name, self.cube_start_positions[other_pos_idx], other_quat)
             self._set_cube_pos_quat(active_cube_name, self.cube_start_positions[forced_pos_idx], active_quat)
 
@@ -655,6 +656,7 @@ class RobotArmEnv(gymnasium.Env):
         for _ in range(10):
             mujoco.mj_step(self.model, self.data)
 
+        # Done after physics has settled
         if stage_roll >= stage_probs[0] + stage_probs[1] + stage_probs[2]:
             self._sample_target()
 
