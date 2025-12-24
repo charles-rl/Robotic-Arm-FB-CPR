@@ -205,7 +205,8 @@ class RobotArmEnv(gymnasium.Env):
         actions_dims = 6
         # Task specific states included
         if self.task != "base":
-            obs_dims += 6
+            obs_dims += 6  # Additional task specific states
+            obs_dims -= 18  # Remove distractor cube states
         if self.control_mode == 1:
             # 3 pos + 3d rotation + 1 gripper
             actions_dims = 7
@@ -277,7 +278,7 @@ class RobotArmEnv(gymnasium.Env):
                 target_cube_state, distractor_cube_state = cube_a_state, cube_b_state
             else:
                 target_cube_state, distractor_cube_state = cube_b_state, cube_a_state
-            task_obs = np.concatenate([robot_state, target_cube_state, distractor_cube_state, self._get_task_states(ee_pos_world)]).astype(self.observation_space.dtype)
+            task_obs = np.concatenate([robot_state, target_cube_state, self._get_task_states(ee_pos_world)]).astype(self.observation_space.dtype)
             return task_obs, fb_obs
         else:
             return fb_obs, fb_obs
