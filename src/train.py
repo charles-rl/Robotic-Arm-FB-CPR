@@ -19,7 +19,7 @@ from environment import RobotArmEnv
 
 # Configuration
 DEBUG = False
-EVAL = False
+EVAL = True
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
 CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
@@ -136,7 +136,7 @@ def train_agent():
         log_interval = 10
         batch_size = 512
         buffer_size = 1_000_000
-        total_timesteps = 500_000
+        total_timesteps = 600_000
 
     # 1. Initialize WandB
     run = wandb.init(
@@ -203,7 +203,7 @@ def train_agent():
             model = TQC(**common_params,
                         top_quantiles_to_drop_per_net=2,
                         learning_rate=3e-4,
-                        gamma=0.995,
+                        gamma=0.99,
                         batch_size=batch_size,
                         buffer_size=buffer_size,
                         train_freq=(200, "step"),
