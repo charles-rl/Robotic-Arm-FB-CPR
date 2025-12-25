@@ -19,7 +19,7 @@ from environment import RobotArmEnv
 
 # Configuration
 DEBUG = False
-EVAL = True
+EVAL = False
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
 CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
