@@ -144,7 +144,7 @@ class TrainConfig:
     # misc
     compile: bool = False
     cudagraphs: bool = False
-    device: str = "cpu"
+    device: str = "cuda"
 
     # WANDB
     use_wandb: bool = True

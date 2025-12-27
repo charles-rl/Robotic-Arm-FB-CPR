@@ -350,7 +350,7 @@ def get_curriculum_probs(success_rate):
     p_expert = np.array([0.1, 0.1, 0.1, 0.7])  # End: Generalization
     # 2. Mixing Factors
     alpha = sigmoid(success_rate, center=0.05, steepness=12.0)
-    beta = sigmoid(success_rate, center=0.4, steepness=12.0)
+    beta = sigmoid(success_rate, center=0.3, steepness=12.0)
     # 3. Blending
     # Blend Novice and Learner based on alpha
     intermediate_probs = ((1.0 - alpha) * p_novice) + (alpha * p_learner)
