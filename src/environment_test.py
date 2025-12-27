@@ -504,20 +504,20 @@ class SO101LiftEnv(SO101BaseEnv):
         else:
             success_rate = 0.0
 
-        # if success_rate < 0.2:
-        #     stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
-        #     self.current_curriculum_stage = 0
-        # elif success_rate < 0.4:
-        #     stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-        #     self.current_curriculum_stage = 1
-        # elif success_rate < 0.6:
-        #     stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-        #     self.current_curriculum_stage = 2
-        # else:
-        #     stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
-        #     self.current_curriculum_stage = 3
+        if success_rate < 0.2:
+            stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
+            self.current_curriculum_stage = 0
+        elif success_rate < 0.4:
+            stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
+            self.current_curriculum_stage = 1
+        elif success_rate < 0.6:
+            stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
+            self.current_curriculum_stage = 2
+        else:
+            stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
+            self.current_curriculum_stage = 3
 
-        stage_probs = get_curriculum_probs(success_rate)
+        # stage_probs = get_curriculum_probs(success_rate)
 
         if self.evaluate == "hold":
             stage_probs = [1.0, 0.0, 0.0, 0.0]
@@ -577,10 +577,9 @@ class SO101LiftEnv(SO101BaseEnv):
             self._set_cube_pos_quat(other_cube_jnt_id, self.cube_start_positions[other_pos_idx], other_quat)
             self._set_cube_pos_quat(active_cube_jnt_id, self.cube_start_positions[self.forced_cube_pos_idx], active_quat)
 
-            qpos = loc_data["pretable_qpos"].copy()
             self.data.qpos[:6] = self._arm_start_pos
             self.data.qvel[:6] = 0.0
-            self.data.ctrl[:6] = qpos
+            self.data.ctrl[:6] = self._arm_start_pos
             self.data.ctrl[5] = self.joint_max[5]  # open
 
         # Update Kinematics
