@@ -12,3 +12,4 @@ imageio[ffmpeg]
 quadprog
 mink
 metaworld
+datasets

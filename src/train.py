@@ -1,7 +1,3 @@
-import numpy as np
-import gymnasium
-import mujoco
-import mujoco.viewer
 import imageio
 import wandb
 import os
@@ -19,7 +15,7 @@ from environment import RobotArmEnv
 
 # Configuration
 DEBUG = False
-EVAL = False
+EVAL = True
 TASK = "lift"
 ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
 CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
@@ -30,7 +26,7 @@ LOAD_CHECKPOINT = False
 CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
 CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
 
-
+# TODO: record rewards and if expert episode
 class RawRewardCallback(BaseCallback):
     """Logs raw reward/length to WandB."""
 

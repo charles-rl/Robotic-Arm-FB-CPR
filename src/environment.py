@@ -261,10 +261,10 @@ class RobotArmEnv(gymnasium.Env):
         right_jaw_force = self.data.sensordata[self.right_jaw_sensor_id]
         # Total grip because sometimes in simulation left force = 0 and right force = 50
         # Sometimes it is left force = 50 and right force = 50
-        total_force_norm = np.tanh((left_jaw_force + right_jaw_force) / 40.0)
+        total_force_norm = np.tanh((left_jaw_force + right_jaw_force) / 30.0)
         # To account for this imbalance we include this feature to help the model
         # In my testing, the right jaw force is always bigger than the left one
-        balance_norm = np.tanh((right_jaw_force - left_jaw_force) / 20.0)
+        balance_norm = np.tanh((right_jaw_force - left_jaw_force) / 30.0)
         jaw_forces = np.array([total_force_norm, balance_norm])
 
         robot_state = np.concatenate([qpos, qvel, ee_pos_rel, ee_orientation, ee_cvel, jaw_forces])
@@ -454,6 +454,7 @@ class RobotArmEnv(gymnasium.Env):
                 # ori_achieved = np.linalg.norm(err[3:]) <= 1e-4
                 # if pos_achieved and ori_achieved:
                 #     break
+            # TODO: Record this for FB training
             self.data.ctrl[:5] = self.configuration.q[:5]
 
         if self.task == "reach":
@@ -461,9 +462,9 @@ class RobotArmEnv(gymnasium.Env):
         else:
             gripper_action = action[-1]
 
-            if gripper_action > 0.1:
+            if gripper_action > 0.0:
                 self.data.ctrl[5] = self.joint_max[5]  # Open
-            elif gripper_action < -0.1:
+            elif gripper_action <= 0.0:
                 self.data.ctrl[5] = self.joint_min[5]  # Closed
             # If between -0.1 and 0.1, keep previous state (do nothing)
 
@@ -487,11 +488,11 @@ class RobotArmEnv(gymnasium.Env):
             self.z_height_achieved = bool(cube_z > self.base_pos_world[2] + 0.08)
         elif cube_z < self.base_pos_world[2] + 0.05:
             self.z_height_achieved = False
-            has_fallen = True
+            # has_fallen = True
 
         has_failed_to_pick = False
-        if self.timesteps > 150 and not self.z_height_achieved:
-            has_failed_to_pick = True
+        # if self.timesteps > 150 and not self.z_height_achieved:
+        #     has_failed_to_pick = True
 
         truncated = bool(self.timesteps >= self.max_episode_steps)
         terminated = has_fallen or has_failed_to_pick
@@ -551,6 +552,7 @@ class RobotArmEnv(gymnasium.Env):
         else:
             success_rate = 0.0
 
+        # TODO: Sigmoid interpolation
         if success_rate < 0.2:
             stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
             self.current_curriculum_stage = 0
@@ -638,22 +640,21 @@ class RobotArmEnv(gymnasium.Env):
             self._set_cube_pos_quat(other_cube_name, self.cube_start_positions[other_pos_idx], other_quat)
             self._set_cube_pos_quat(active_cube_name, self.cube_start_positions[forced_pos_idx], active_quat)
 
-            qpos = loc_data["pretable_qpos"].copy()
             self.data.qpos[:6] = self._arm_start_pos
             self.data.qvel[:6] = 0.0
-            self.data.ctrl[:6] = qpos
+            self.data.ctrl[:6] = self._arm_start_pos
             self.data.ctrl[5] = self.joint_max[5]  # open
 
         # ========================================================================
+        # Settle Physics
+        for _ in range(10):
+            mujoco.mj_step(self.model, self.data)
+
         # Update Kinematics
         self.configuration.update(self.data.qpos)
         mujoco.mj_forward(self.model, self.data)
         self.posture_task.set_target_from_configuration(self.configuration)
         mink.move_mocap_to_frame(self.model, self.data, "target", "gripperframe", "site")
-
-        # Settle Physics
-        for _ in range(10):
-            mujoco.mj_step(self.model, self.data)
 
         # Done after physics has settled
         if stage_roll >= stage_probs[0] + stage_probs[1] + stage_probs[2]:
