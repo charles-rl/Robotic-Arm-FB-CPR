@@ -333,6 +333,33 @@ POSITIONS = {
 }
 
 
+def sigmoid(x, center, steepness):
+    """Simple sigmoid function for smooth interpolation."""
+    # result is 0.0 when x << center, and 1.0 when x >> center
+    return 1.0 / (1.0 + np.exp(-steepness * (x - center)))
+
+def get_curriculum_probs(success_rate):
+    """
+    To calculate stage probabilities.
+    Returns: [Hold, Hoist, Pre-Hoist, Random]
+    """
+    # 1. Define the anchor distributions (Probability Profiles)
+    # Format: [Hold, Hoist, Pre-Hoist, Random]
+    p_novice = np.array([0.8, 0.2, 0.0, 0.0])  # Start: Focus on gripping
+    p_learner = np.array([0.15, 0.3, 0.5, 0.05])  # Middle: Focus on lifting mechanics
+    p_expert = np.array([0.1, 0.1, 0.1, 0.7])  # End: Generalization
+    # 2. Mixing Factors
+    alpha = sigmoid(success_rate, center=0.05, steepness=12.0)
+    beta = sigmoid(success_rate, center=0.4, steepness=12.0)
+    # 3. Blending
+    # Blend Novice and Learner based on alpha
+    intermediate_probs = ((1.0 - alpha) * p_novice) + (alpha * p_learner)
+    # Blend with Expert based on beta
+    final_probs = ((1.0 - beta) * intermediate_probs) + (beta * p_expert)
+    # Return normalized (sums to 1.0)
+    return final_probs / np.sum(final_probs)
+
+
 class SO101LiftEnv(SO101BaseEnv):
     def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=0):
         super().__init__(render_mode, reward_type, control_mode)
@@ -477,18 +504,20 @@ class SO101LiftEnv(SO101BaseEnv):
         else:
             success_rate = 0.0
 
-        if success_rate < 0.2:
-            stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
-            self.current_curriculum_stage = 0
-        elif success_rate < 0.4:
-            stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-            self.current_curriculum_stage = 1
-        elif success_rate < 0.6:
-            stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-            self.current_curriculum_stage = 2
-        else:
-            stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
-            self.current_curriculum_stage = 3
+        # if success_rate < 0.2:
+        #     stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
+        #     self.current_curriculum_stage = 0
+        # elif success_rate < 0.4:
+        #     stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
+        #     self.current_curriculum_stage = 1
+        # elif success_rate < 0.6:
+        #     stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
+        #     self.current_curriculum_stage = 2
+        # else:
+        #     stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
+        #     self.current_curriculum_stage = 3
+
+        stage_probs = get_curriculum_probs(success_rate)
 
         if self.evaluate == "hold":
             stage_probs = [1.0, 0.0, 0.0, 0.0]
