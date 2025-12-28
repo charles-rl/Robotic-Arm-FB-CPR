@@ -1,7 +1,8 @@
+import os
 import imageio
 import wandb
-import os
 import torch
+import numpy as np
 
 from sb3_contrib import TQC, CrossQ
 from stable_baselines3 import SAC, PPO
@@ -11,27 +12,52 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalC
 from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.monitor import Monitor
 
-from environment import RobotArmEnv
+from environment import SO101LiftEnv, SO101ReachEnv
 
-# Configuration
-DEBUG = False
-EVAL = True
-TASK = "lift"
-ALGO = "TQC"  # <--- CHANGE THIS: "SAC", "TQC", or "PPO" or "CrossQ"
-CONTROL_MODE = "delta_end_effector"  # delta_end_effector delta_joint_position
-REWARD_THRESHOLD = 100.0
-RUN_NAME = f"{ALGO}_{CONTROL_MODE}"
+# ==================================================================================
+#                                 CONFIGURATION
+# ==================================================================================
+CONFIG = {
+    "DEBUG": False,
+    "EVAL": False,  # Set to False to Train, True to Evaluate
+    "TASK": "lift",  # "lift" or "reach"
+    "ALGO": "TQC",  # "SAC", "TQC", "PPO", "CrossQ"
+    "CONTROL_MODE": "delta_end_effector",  # "delta_end_effector" or "delta_joint_position"
+    "REWARD_THRESHOLD": 100.0,
 
-LOAD_CHECKPOINT = False
-CHECKPOINT_MODEL_PATH = f"../models/tqc_so101_{TASK}.zip"
-CHECKPOINT_STATS_PATH = f"../models/vec_normalize_{TASK}.pkl"
+    # Checkpointing
+    "LOAD_CHECKPOINT": False,
+    "CHECKPOINT_DIR": "../models",
+    "LOG_DIR": "./models",
+    "DATASET_DIR": "../data",
 
-# TODO: record rewards and if expert episode
+    # Training Hyperparameters (Production)
+    "TOTAL_TIMESTEPS": 800_000,
+    "BATCH_SIZE": 512,
+    "BUFFER_SIZE": 1_000_000,
+    "LOG_INTERVAL": 10,
+    "SAVE_FREQ": 10_000,
+    "EVAL_FREQ": 2_000,
+    "DATASET_SAVE_FREQ": 100_000,
+
+    # Training Hyperparameters (Debug)
+    "DEBUG_TIMESTEPS": 2_000,
+    "DEBUG_BATCH_SIZE": 64,
+    "DEBUG_BUFFER_SIZE": 5_000,
+    "DEBUG_DATASET_SAVE_FREQ": 200,
+}
+
+CONFIG["RUN_NAME"] = f"{CONFIG['ALGO']}_{CONFIG['CONTROL_MODE']}_{CONFIG['TASK']}"
+CONFIG["MODEL_PATH"] = os.path.join(CONFIG["CHECKPOINT_DIR"], f"{CONFIG['ALGO'].lower()}_so101_{CONFIG['TASK']}.zip")
+CONFIG["STATS_PATH"] = os.path.join(CONFIG["CHECKPOINT_DIR"], f"vec_normalize_{CONFIG['TASK']}.pkl")
+
+
+# ==================================================================================
+#                                    CALLBACKS
+# ==================================================================================
+
 class RawRewardCallback(BaseCallback):
     """Logs raw reward/length to WandB."""
-
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
 
     def _on_step(self) -> bool:
         for info in self.locals['infos']:
@@ -44,39 +70,102 @@ class RawRewardCallback(BaseCallback):
         return True
 
 
-class EntropyResetCallback(BaseCallback):
-    def __init__(self, verbose=0):
+class DataCollectorCallback(BaseCallback):
+    """
+    Collects raw data (including info dicts) for FB representation learning.
+    Saves to .npz files.
+    """
+
+    def __init__(self, save_dir, task_name, save_freq=100_000, verbose=0):
         super().__init__(verbose)
+        self.save_dir = save_dir
+        self.task_name = task_name
+        self.save_freq = save_freq
+        self.buffer = {
+            "observation": [],  # The 'fb_obs' from info (unnormalized)
+            "action": [],  # The action taken
+            "reward": [],  # The reward received
+            "terminated": [],  # Done flag
+            "physics": [],  # qpos + qvel
+            "raw_motor_ctrl": [],  # 6-DOF motor command
+            "task_ids": [],
+            "episode_ids": []
+        }
+        self.chunk_id = 0
+        os.makedirs(self.save_dir, exist_ok=True)
 
     def _on_step(self) -> bool:
-        # 1. Check if ANY of the vectorized environments signaled a reset
-        # 'self.locals' contains 'infos', which is a list of dicts for each env
-        for info in self.locals["infos"]:
-            current_curriculum_stage = info.get("curriculum_stage", False)
-            if current_curriculum_stage and (current_curriculum_stage >= 2):
-                self.current_curriculum_stage = current_curriculum_stage
-                if self.verbose > 0:
-                    print("Stage change detected! Resetting entropy temperature...")
+        # Retrieve data from the vectorized environment
+        # Note: self.locals['infos'] is a list of dicts (one per env)
+        # We assume DummyVecEnv with 1 env for simplicity, but we iterate to be safe.
 
-                # 2. Access the SAC model internal log_ent_coef
-                # This resets the temperature (alpha) to e.g., 1.0 (log(1.0) = 0)
-                with torch.no_grad():
-                    self.model.log_ent_coef.fill_(0.0)
+        infos = self.locals['infos']
+        actions = self.locals['actions']
+        rewards = self.locals['rewards']
+        dones = self.locals['dones']
 
-                    # 3. Optional: Reset the entropy optimizer to clear momentum
-                # This prevents the optimizer from immediately "diving" back to low entropy
-                self.model.ent_coef_optimizer = torch.optim.Adam(
-                    [self.model.log_ent_coef],
-                    lr=self.model.learning_rate
-                )
+        for i, info in enumerate(infos):
+            # 1. Get Physics & Motor (Crucial for FB)
+            if "physics" in info:
+                self.buffer["physics"].append(info["physics"])
+            else:
+                # Fallback if info missing (shouldn't happen with your env)
+                pass
+
+            if "raw_motor_ctrl" in info:
+                self.buffer["raw_motor_ctrl"].append(info["raw_motor_ctrl"])
+
+            # 2. Get Observation
+            # We prefer 'fb_obs' from info because it is UNNORMALIZED.
+            # VecNormalize would obscure the real state.
+            if "fb_obs" in info:
+                self.buffer["observation"].append(info["fb_obs"])
+            else:
+                # Fallback to the normalized obs if fb_obs missing
+                # self.locals['new_obs'][i]
+                pass
+
+            self.buffer["episode_ids"].append(info["episode_id"])
+            self.buffer["task_ids"].append(info["task_id"])
+
+            # 3. Standard RL data
+            self.buffer["action"].append(actions[i])
+            self.buffer["reward"].append(rewards[i])
+            self.buffer["terminated"].append(dones[i])
+
+        # Periodically dump to disk to avoid OOM on massive runs
+        if self.num_timesteps % self.save_freq == 0 and self.num_timesteps > 0:
+            self._save_chunk()
+
         return True
 
+    def _save_chunk(self):
+        if len(self.buffer["observation"]) == 0:
+            return
 
-# --- NEW CALLBACK TO FIX SAVING ---
+        filename = os.path.join(self.save_dir, f"{self.task_name}_chunk_{self.chunk_id}.npz")
+
+        # Convert list to numpy arrays
+        data_to_save = {k: np.array(v) for k, v in self.buffer.items()}
+
+        np.savez_compressed(filename, **data_to_save)
+
+        if self.verbose > 0:
+            print(f"💾 Saved data chunk {self.chunk_id} to {filename} ({len(self.buffer['observation'])} steps)")
+
+        # Clear memory
+        self.chunk_id += 1
+        for k in self.buffer:
+            self.buffer[k] = []
+
+    def _on_training_end(self) -> None:
+        # Save remaining data
+        self._save_chunk()
+        print("✅ Data Collection Complete.")
+
+
 class CheckpointWithStatsCallback(BaseCallback):
-    """
-    Saves the model AND the VecNormalize statistics every `save_freq` steps.
-    """
+    """Saves the model AND the VecNormalize statistics."""
 
     def __init__(self, save_freq: int, save_path: str, name_prefix: str = "rl_model", verbose=1):
         super().__init__(verbose)
@@ -85,7 +174,6 @@ class CheckpointWithStatsCallback(BaseCallback):
         self.name_prefix = name_prefix
 
     def _init_callback(self) -> None:
-        # Create folder if needed
         if self.save_path is not None:
             os.makedirs(self.save_path, exist_ok=True)
 
@@ -94,10 +182,8 @@ class CheckpointWithStatsCallback(BaseCallback):
             # 1. Save Model
             model_path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps")
             self.model.save(model_path)
-
-            # 2. Save Normalization Stats
+            # 2. Save Stats
             stats_path = os.path.join(self.save_path, f"vecnormalize_{self.num_timesteps}_steps.pkl")
-            # Get the env from the model safely
             env = self.model.get_vec_normalize_env()
             if env is not None:
                 env.save(stats_path)
@@ -109,108 +195,138 @@ class CheckpointWithStatsCallback(BaseCallback):
         return True
 
 
+# ==================================================================================
+#                                 HELPER FUNCTIONS
+# ==================================================================================
+
+def make_env_class(task_name):
+    """Returns the class constructor based on task string."""
+    if task_name == "lift":
+        return SO101LiftEnv
+    elif task_name == "reach":
+        return SO101ReachEnv
+    else:
+        raise ValueError(f"Unknown task: {task_name}")
+
+
+def get_model_class(algo_name):
+    if algo_name == "TQC":
+        return TQC
+    elif algo_name == "SAC":
+        return SAC
+    elif algo_name == "PPO":
+        return PPO
+    elif algo_name == "CrossQ":
+        return CrossQ
+    raise ValueError(f"Unknown Algorithm: {algo_name}")
+
+
+def create_vec_env(task, control_mode, evaluate=False, stats_path=None, training=True):
+    """Creates a normalized vectorized environment."""
+    EnvClass = make_env_class(task)
+
+    # 1. Create Base Env
+    # Note: Monitor wrapper is crucial for recording episode stats
+    env = DummyVecEnv([lambda: Monitor(EnvClass(
+        render_mode=None,  # Training is headless
+        reward_type="dense",
+        control_mode=control_mode,
+        evaluate=evaluate
+    ))])
+
+    # 2. Add Normalization
+    if stats_path and os.path.exists(stats_path):
+        print(f"🔄 Loading Env Stats from {stats_path}")
+        env = VecNormalize.load(stats_path, env)
+        env.training = training  # Update stats if training, freeze if eval
+        env.norm_reward = False  # Usually keep rewards raw for clarity
+    else:
+        print("✨ Creating New Env Stats")
+        # clip_obs=10.0 is standard stable-baselines3 default
+        env = VecNormalize(env, norm_obs=True, norm_reward=False, clip_obs=10., training=training)
+
+    return env
+
+
+# ==================================================================================
+#                                   MAIN LOGIC
+# ==================================================================================
+
 def test_environment_structure():
     print("--- 1. Checking Environment Compliance ---")
-    env = RobotArmEnv(reward_type="dense", task=TASK, control_mode=CONTROL_MODE)
+    EnvClass = make_env_class(CONFIG["TASK"])
+    env = EnvClass(reward_type="dense", control_mode=CONFIG["CONTROL_MODE"])
     try:
         check_env(env)
-        print("✅ Environment passed Gymnasium checks!")
+        print(f"✅ {CONFIG['TASK']} Environment passed Gymnasium checks!")
     except Exception as e:
-        print(f"❌ Environment failed checks: {e}")
+        print(f"❌ {CONFIG['TASK']} Environment failed checks: {e}")
     env.close()
 
 
 def train_agent():
-    print(f"\n--- 2. Setting up Training ({ALGO}) for task: {TASK} ---")
+    print(f"\n--- 2. Setting up Training ({CONFIG['ALGO']}) for task: {CONFIG['TASK']} ---")
 
-    if DEBUG:
-        log_interval = 1
-        batch_size = 64
-        buffer_size = 50_000
-        total_timesteps = 10_000
-    else:
-        log_interval = 10
-        batch_size = 512
-        buffer_size = 1_000_000
-        total_timesteps = 600_000
+    # Setup Hyperparams based on DEBUG flag
+    total_timesteps = CONFIG["DEBUG_TIMESTEPS"] if CONFIG["DEBUG"] else CONFIG["TOTAL_TIMESTEPS"]
+    batch_size = CONFIG["DEBUG_BATCH_SIZE"] if CONFIG["DEBUG"] else CONFIG["BATCH_SIZE"]
+    buffer_size = CONFIG["DEBUG_BUFFER_SIZE"] if CONFIG["DEBUG"] else CONFIG["BUFFER_SIZE"]
+    log_interval = 1 if CONFIG["DEBUG"] else CONFIG["LOG_INTERVAL"]
+    dataset_save_freq = CONFIG["DEBUG_DATASET_SAVE_FREQ"] if CONFIG["DEBUG"] else CONFIG["DATASET_SAVE_FREQ"]
 
-    # 1. Initialize WandB
+    # 1. WandB Init
     run = wandb.init(
-        project=f"so101-{TASK}-fb",
-        name=RUN_NAME,
-        config={"algo": ALGO, "task": TASK, "control": CONTROL_MODE, "finetune": LOAD_CHECKPOINT},
+        project=f"so101-{CONFIG['TASK']}-fb",
+        name=CONFIG["RUN_NAME"],
+        config=CONFIG,
         sync_tensorboard=True,
     )
 
-    base_env = DummyVecEnv(
-        [lambda: Monitor(RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE))])
+    # 2. Environment Setup
+    # Load stats if checkpoint exists, otherwise create new
+    stats_load_path = CONFIG["STATS_PATH"] if CONFIG["LOAD_CHECKPOINT"] else None
+    env = create_vec_env(CONFIG["TASK"], CONFIG["CONTROL_MODE"], evaluate=False, stats_path=stats_load_path,
+                         training=True)
 
-    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_STATS_PATH):
-        print(f"🔄 Loading Environment Stats from {CHECKPOINT_STATS_PATH}")
-        # Load stats, but point it to the NEW environment (base_env)
-        # training=True ensures we continue updating stats as we learn the new task
-        env = VecNormalize.load(CHECKPOINT_STATS_PATH, base_env)
-        env.training = True
-        env.norm_reward = False  # Keep reward raw for clarity, or set True if your previous run did
-    else:
-        print("✨ Creating New Environment Stats")
-        env = VecNormalize(base_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+    # 3. Model Setup
+    ModelClass = get_model_class(CONFIG["ALGO"])
 
-    # 3. Load or Create Model
-    if ALGO == "TQC":
-        ModelClass = TQC
-    elif ALGO == "SAC":
-        ModelClass = SAC
-    elif ALGO == "PPO":
-        ModelClass = PPO
-    elif ALGO == "CrossQ":
-        ModelClass = CrossQ
-
-    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_MODEL_PATH):
-        print(f"🔄 Loading Model Weights from {CHECKPOINT_MODEL_PATH}")
-
-        # We load the model, but we attach the NEW env.
-        # custom_objects: We can force a lower learning rate for fine-tuning
+    if CONFIG["LOAD_CHECKPOINT"] and os.path.exists(CONFIG["MODEL_PATH"]):
+        print(f"🔄 Loading Model Weights from {CONFIG['MODEL_PATH']}")
         model = ModelClass.load(
-            CHECKPOINT_MODEL_PATH,
+            CONFIG["MODEL_PATH"],
             env=env,
             tensorboard_log=f"runs/{run.id}",
             custom_objects={
-                "learning_rate": 1e-5,  # Lower LR for fine-tuning (optional, remove to keep original)
-                "ent_coef": "auto_0.1"  # Reset entropy to encourage some new exploration
+                "learning_rate": 1e-5,  # Fine-tuning LR
+                "ent_coef": "auto_0.1"
             }
         )
-        # IMPORTANT: When loading, the replay buffer is preserved.
-        # If the task is very different, you might want to clear it:
-        # model.replay_buffer.reset()
-        # But for Hold -> Lift, keeping the "Hold" memories is actually good.
     else:
         print("✨ Initializing New Model")
-        # ... (Your original initialization code) ...
         policy_kwargs = dict(net_arch=[512, 512])
-        if ALGO == "TQC":
+
+        # Algo Specific Configs
+        if CONFIG["ALGO"] == "TQC":
             policy_kwargs["use_sde"] = True
             policy_kwargs["log_std_init"] = -2
-
-        common_params = dict(policy="MlpPolicy", env=env, verbose=1, tensorboard_log=f"runs/{run.id}",
-                             policy_kwargs=policy_kwargs)
-
-        if ALGO == "TQC":
-            model = TQC(**common_params,
-                        top_quantiles_to_drop_per_net=2,
-                        learning_rate=3e-4,
-                        gamma=0.99,
-                        batch_size=batch_size,
-                        buffer_size=buffer_size,
-                        train_freq=(200, "step"),
-                        gradient_steps=200,
-                        ent_coef="auto")
-
-        if ALGO == "CrossQ":
+            model = TQC(
+                "MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{run.id}",
+                policy_kwargs=policy_kwargs,
+                top_quantiles_to_drop_per_net=2,
+                learning_rate=3e-4,
+                gamma=0.99,
+                batch_size=batch_size,
+                buffer_size=buffer_size,
+                train_freq=(200, "step"),
+                gradient_steps=200,
+                ent_coef="auto"
+            )
+        elif CONFIG["ALGO"] == "CrossQ":
             model = CrossQ(
-                **common_params,
-                learning_rate=1e-3,  # CrossQ works best with 1e-3 or 7e-4
-                batch_size=1024,  # Increased for Batch Norm stability
+                "MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{run.id}",
+                learning_rate=1e-3,
+                batch_size=1024,  # CrossQ needs large batch
                 buffer_size=buffer_size,
                 gamma=0.99,
                 train_freq=1,
@@ -219,47 +335,46 @@ def train_agent():
                 ent_coef="auto",
                 target_entropy=-3.5
             )
+        else:
+            # Fallback for SAC/PPO default params
+            model = ModelClass("MlpPolicy", env, verbose=1, tensorboard_log=f"runs/{run.id}",
+                               policy_kwargs=policy_kwargs)
 
     # 4. Callbacks
-    raw_reward_callback = RawRewardCallback()
-    wandb_callback = WandbCallback(gradient_save_freq=200, verbose=2)
-
-    # --- REPLACED CheckpointCallback WITH CheckpointWithStatsCallback ---
-    checkpoint_callback = CheckpointWithStatsCallback(
-        save_freq=10000,
-        save_path=f"./models/{run.id}",
-        name_prefix="rl_model"
-    )
-
-    eval_env_specific = DummyVecEnv([lambda: Monitor(
-        RobotArmEnv(render_mode=None, reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=True))])
-
-    if LOAD_CHECKPOINT and os.path.exists(CHECKPOINT_STATS_PATH):
-        eval_env_specific = VecNormalize.load(CHECKPOINT_STATS_PATH, eval_env_specific)
-        eval_env_specific.training = False
-        eval_env_specific.norm_reward = False
-    else:
-        eval_env_specific = VecNormalize(eval_env_specific, norm_obs=True, norm_reward=False, clip_obs=10.,
-                                         training=False)
+    # Eval Env (Independent stats, freeze training)
+    eval_env = create_vec_env(CONFIG["TASK"], CONFIG["CONTROL_MODE"], evaluate=True, stats_path=stats_load_path,
+                              training=False)
 
     eval_callback = EvalCallback(
-        eval_env_specific,
-        best_model_save_path=f"./models/{run.id}/best_model",
-        log_path=f"./models/{run.id}/eval_logs",
-        eval_freq=2000,
+        eval_env,
+        best_model_save_path=f"{CONFIG['LOG_DIR']}/{run.id}/best_model",
+        log_path=f"{CONFIG['LOG_DIR']}/{run.id}/eval_logs",
+        eval_freq=CONFIG["EVAL_FREQ"],
         n_eval_episodes=10,
         deterministic=True,
         render=False,
         verbose=1,
     )
-    reset_callback = EntropyResetCallback(verbose=1)
+
+    checkpoint_callback = CheckpointWithStatsCallback(
+        save_freq=CONFIG["SAVE_FREQ"],
+        save_path=f"{CONFIG['LOG_DIR']}/{run.id}",
+        name_prefix="rl_model"
+    )
+
+    data_collector = DataCollectorCallback(
+        save_dir=os.path.join(CONFIG["DATASET_DIR"], CONFIG["TASK"]),
+        task_name=CONFIG["TASK"],
+        save_freq=dataset_save_freq,  # e.g. every 100k steps
+        verbose=1
+    )
 
     callback_group = CallbackList([
-        raw_reward_callback,
-        wandb_callback,
+        RawRewardCallback(),
+        WandbCallback(gradient_save_freq=200, verbose=2),
         checkpoint_callback,
         eval_callback,
-        # reset_callback
+        data_collector
     ])
 
     print("--- 3. Starting Training ---")
@@ -272,103 +387,87 @@ def train_agent():
     )
 
     # 5. Final Save
-    model.save(f"../models/{ALGO.lower()}_so101_{TASK}")
-    env.save(f"../models/vec_normalize_{TASK}.pkl")
-    print("✅ Final Model & Stats saved.")
+    os.makedirs(CONFIG["CHECKPOINT_DIR"], exist_ok=True)
+    model.save(CONFIG["MODEL_PATH"])
+    env.save(CONFIG["STATS_PATH"])
+    print(f"✅ Final Model saved to {CONFIG['MODEL_PATH']}")
 
     run.finish()
     env.close()
 
 
-def evaluate(best_reward, episodes=3, find_best=False, only_visualize=False, evaluate_type: str = True):
-    print(f"\n--- 4. Evaluating Agent: {TASK} ({ALGO}) ---")
+def evaluate(episodes=3, evaluate_type=True, only_visualize=False):
+    print(f"\n--- 4. Evaluating Agent: {CONFIG['TASK']} ({CONFIG['ALGO']}) - Mode: {evaluate_type} ---")
 
-    # 1. Load Env
-    if only_visualize:
-        env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="human", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=evaluate_type)])
-    else:
-        env_ = DummyVecEnv(
-            [lambda: RobotArmEnv(render_mode="rgb_array", reward_type="dense", task=TASK, control_mode=CONTROL_MODE, evaluate=evaluate_type)])
+    EnvClass = make_env_class(CONFIG["TASK"])
+    render_mode = "human" if only_visualize else "rgb_array"
+
+    # 1. Create Eval Env
+    # Note: We use DummyVecEnv manually here to control rendering loop
+    def make_eval_env():
+        return EnvClass(render_mode=render_mode, reward_type="dense", control_mode=CONFIG["CONTROL_MODE"],
+                        evaluate=evaluate_type)
+
+    env_ = DummyVecEnv([make_eval_env])
     max_steps = env_.get_attr("max_episode_steps")[0]
 
-    # 2. Load Normalization Stats
-    path = f"../models/vec_normalize_{TASK}.pkl"
-    if os.path.exists(path):
-        env = VecNormalize.load(path, env_)
+    # 2. Load Stats
+    if os.path.exists(CONFIG["STATS_PATH"]):
+        env = VecNormalize.load(CONFIG["STATS_PATH"], env_)
         env.training = False
         env.norm_reward = False
         print("Loaded Normalization Stats.")
     else:
-        print("⚠️ Warning: No normalization stats found. Evaluation might be broken.")
+        print("⚠️ Warning: No normalization stats found. Evaluation might be suboptimal.")
         env = env_
 
-    # 3. Load Correct Model Class
-    if ALGO == "TQC":
-        ModelClass = TQC
-    elif ALGO == "CrossQ":
-        ModelClass = CrossQ
-    elif ALGO == "SAC":
-        ModelClass = SAC
-    elif ALGO == "PPO":
-        ModelClass = PPO
+    # 3. Load Model
+    ModelClass = get_model_class(CONFIG["ALGO"])
+    if not os.path.exists(CONFIG["MODEL_PATH"]):
+        print(f"❌ Model not found at {CONFIG['MODEL_PATH']}")
+        return
 
-    model = ModelClass.load(f"../models/{ALGO.lower()}_so101_{TASK}")
-    if evaluate_type is True:
-        evaluate_type = "eval"
+    model = ModelClass.load(CONFIG["MODEL_PATH"])
 
-    # 4. Loop
-    if not find_best:
-        for ep in range(episodes):
-            frames = []
-            obs = env.reset()
-            video_path = f"{evaluate_type}_{ep}.mp4"
-            print(f"Simulating Episode {ep + 1}/{episodes}...")
+    # 4. Simulation Loop
+    for ep in range(episodes):
+        frames = []
+        obs = env.reset()
+        desc_str = str(evaluate_type) if isinstance(evaluate_type, str) else "eval"
+        video_path = f"{CONFIG['TASK']}_{desc_str}_{ep}.mp4"
+        print(f"Simulating Episode {ep + 1}/{episodes}...")
 
-            for i in range(max_steps + 10):
-                action, _ = model.predict(obs, deterministic=True)
-                obs, rewards, dones, info = env.step(action)
-                if only_visualize:
-                    env.envs[0].render()
-                else:
-                    frame = env.envs[0].render()
-                    frames.append(frame)
-                if dones[0]: break
+        total_reward = 0
+        for _ in range(max_steps + 10):
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rewards, dones, info = env.step(action)
+            total_reward += rewards[0]
 
-            if not only_visualize:
-                print(f"Saving {video_path}...")
-                imageio.mimsave(video_path, frames, fps=30)
-    else:
-        num_good_eps = 0
-        while num_good_eps < episodes:
-            frames = []
-            obs = env.reset()
-            video_path = f"eval_ep_{num_good_eps}.mp4"
-            print(f"Simulating Episode {num_good_eps + 1}/{episodes}...")
-            total_reward = 0.0
-            for i in range(max_steps + 10):
-                action, _ = model.predict(obs, deterministic=True)
-                obs, rewards, dones, info = env.step(action)
-                total_reward += rewards[0]
+            if only_visualize:
+                env.envs[0].render()
+            else:
                 frame = env.envs[0].render()
                 frames.append(frame)
-                if dones[0]: break
 
-            if total_reward > best_reward:
-                print(f"Saving {video_path}...")
-                imageio.mimsave(video_path, frames, fps=30)
-                num_good_eps += 1
-            else:
-                print("Failed episode")
+            if dones[0]: break
+
+        print(f"Episode {ep + 1} Reward: {total_reward:.2f}")
+
+        if not only_visualize:
+            print(f"Saving {video_path}...")
+            imageio.mimsave(video_path, frames, fps=30)
+
+    env.close()
 
 
 if __name__ == "__main__":
     test_environment_structure()
 
-    if not EVAL:
+    if not CONFIG["EVAL"]:
         train_agent()
     else:
-        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hold")
-        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="hoist")
-        evaluate(episodes=1, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type="prehoist")
-        evaluate(episodes=3, best_reward=REWARD_THRESHOLD, find_best=False, evaluate_type=True)
+        # Run standard evaluation suite
+        evaluate(episodes=1, evaluate_type="hold")
+        evaluate(episodes=1, evaluate_type="hoist")
+        evaluate(episodes=1, evaluate_type="prehoist")
+        evaluate(episodes=3, evaluate_type=True)  # Full random eval
