@@ -44,9 +44,9 @@ def create_agent(
     agent_config.model.device = device
     agent_config.model.norm_obs = True
     agent_config.model.seq_length = 1
-    agent_config.train.batch_size = 1024
+    agent_config.train.batch_size = 512
     # archi
-    agent_config.model.archi.z_dim = 100
+    agent_config.model.archi.z_dim = 30
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -66,7 +66,7 @@ def create_agent(
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.99
+    agent_config.train.discount = 0.9
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -83,6 +83,9 @@ def load_data(dataset_path):
             return arr.reshape(-1, 1)
         return arr
 
+    reward_scale = 1.0 / 8.0 # divided by 8.0 since 8 is max for lift task
+    # TODO: this scale is only for lift task
+
     storage = {
         "observation": raw_data["observation"][:-1].astype(np.float32),
         "action": raw_data["action"][:-1].astype(np.float32),
@@ -93,10 +96,10 @@ def load_data(dataset_path):
         "raw_motor_ctrl": raw_data["raw_motor_ctrl"][:-1].astype(np.float32),
         "task_ids": to_2d(raw_data["task_ids"][:-1]).astype(np.int32),
         "episode_ids": to_2d(raw_data["episode_ids"][:-1]).astype(np.int32),
-        "reward": to_2d(raw_data["reward"][:-1]).astype(np.float32),
+        "reward": to_2d(raw_data["reward"][:-1] * reward_scale).astype(np.float32),
         # -----------------------------
         "next": {
-            "reward": to_2d(raw_data["reward"][1:]).astype(np.float32),
+            "reward": to_2d(raw_data["reward"][1:] * reward_scale).astype(np.float32),
             "observation": raw_data["observation"][1:].astype(np.float32),
             "physics": raw_data["physics"][1:].astype(np.float32),
             "terminated": to_2d(raw_data["terminated"][:-1]).astype(bool),
@@ -129,8 +132,8 @@ class TrainConfig:
     num_train_steps: int = 800_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
-    work_dir: str | None = "../../models"
-    log_dir: str | None = "../../logs"
+    work_dir: str | None = "../models"
+    log_dir: str | None = "../logs"
 
     checkpoint_every_steps: int = 100_000
 
@@ -273,7 +276,8 @@ class Workspace:
                     render_mode=render_mode,
                     reward_type="dense",
                     control_mode="delta_end_effector",
-                    evaluate=True
+                    fb_train=True,
+                    evaluate=True,
                 )
 
             num_ep = self.cfg.num_eval_episodes
@@ -284,7 +288,7 @@ class Workspace:
                 done = False
                 while not done:
                     with torch.no_grad(), eval_mode(self.agent._model):
-                        obs = torch.tensor(observation, device=self.agent.device, dtype=torch.float32)
+                        obs = torch.tensor(observation, device=self.agent.device, dtype=torch.float32).reshape(1, -1)
                         action = self.agent.act(obs=obs, z=z, mean=True).cpu().numpy()[0]
                     observation_, reward, terminated, truncated, info = eval_env.step(action)
                     done = terminated or truncated
@@ -310,9 +314,7 @@ class Workspace:
                     {f"{task}/{k}": v for k, v in m_dict.items()},
                     step=t,
                 )
-                wandb.log({
-                    f"env_steps": t,
-                }, step=t)
+                #TODO: wrong logged value here, for some reason it's just 0
 
             m_dict["task"] = task
             print(m_dict)
@@ -320,10 +322,10 @@ class Workspace:
         if all_tasks_avg_reward > self.best_avg_reward:
             self.best_avg_reward = all_tasks_avg_reward
             self.agent.save(str(self.work_dir / "best checkpoint"))
-            print(f"🌟 New Best Model! Avg Reward: {np.mean(total_reward):.2f} (Was: {self.best_avg_reward:.2f})")
+            print(f"🌟 New Best Model! Avg Reward: {all_tasks_avg_reward:.2f} (Was: {self.best_avg_reward:.2f})")
 
         if EVAL:
-            video_name = f"{task}_eval.mp4"
+            video_name = f"{task}_eval{t}.mp4"
             imageio.mimsave(str(self.work_dir / video_name), frames, fps=30)
             print(f"   💾 Saved video to {video_name}")
 
@@ -348,7 +350,7 @@ if __name__ == "__main__":
     config = tyro.cli(TrainConfig)
 
     # fb_train=True to get fb observation space
-    env = SO101ReachEnv(fb_train=True, evaluate=True)
+    env = SO101ReachEnv(fb_train=True, evaluate=True, control_mode="delta_end_effector")
     observation_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     del env
@@ -367,18 +369,24 @@ if __name__ == "__main__":
         config.use_wandb = False
 
     ws = Workspace(config, agent_cfg=agent_config)
-    if not (EVAL or DEBUG):
+    if not EVAL:
         ws.train()
 
     if EVAL:
-        print("Starting  Evaluation...")
-        ws.init_replay_buffer()
-        ws.agent = FBAgent.load(str(ws.work_dir / "server/checkpoint"), device=ws.cfg.device)
-        # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
-        ws.eval(0)
-
-        # print("Starting Best Evaluation...")
+        # print("Starting  Evaluation...")
         # ws.init_replay_buffer()
-        # ws.agent = FBAgent.load(str(ws.work_dir / "server/best checkpoint"), device=ws.cfg.device)
+        # ws.agent = FBAgent.load(str(ws.work_dir / "server/checkpoint"), device=ws.cfg.device)
         # # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
         # ws.eval(0)
+
+        print("Starting Best Evaluation...")
+        ws.init_replay_buffer()
+        ws.agent = FBAgent.load(str(ws.work_dir / "server/best checkpoint"), device=ws.cfg.device)
+        # ws.agent.load(str(ws.work_dir / "checkpoint"), device=ws.cfg.device)
+        # while True:
+        #     ws.eval(0)
+        #     if ws.best_avg_reward > 400.0:
+        #         break
+        ws.eval(0)
+        ws.eval(1)
+        ws.eval(2)

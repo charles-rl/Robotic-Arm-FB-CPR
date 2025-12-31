@@ -9,7 +9,7 @@ class SO101BaseEnv(gymnasium.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
     FRAME_SKIP = 17
 
-    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position"):
+    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_end_effector"):
         self.render_mode = render_mode
         self.reward_type = reward_type
 
@@ -90,6 +90,7 @@ class SO101BaseEnv(gymnasium.Env):
         self.episode_id = -1
         self.task_types = ("reach", "lift")
         self.task_id = -1
+        self.cube_focus_idx = -1
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -240,6 +241,7 @@ class SO101BaseEnv(gymnasium.Env):
             "raw_motor_ctrl": self.raw_motor_ctrl_buffer.copy(),
             "episode_id": self.episode_id,
             "task_id": self.task_id,
+            "cube_focus_idx": self.cube_focus_idx,
         }
 
     def set_physics_state(self, state_vector):
@@ -387,7 +389,6 @@ class SO101LiftEnv(SO101BaseEnv):
         self.success_history = deque(maxlen=50)
 
         self.z_height_achieved = False
-        self.cube_focus_idx = None
         self.target_cube_id = None
         self.object_start_height = None
         self.episode_types = ("hold", "hoist", "prehoist", "default")
@@ -787,7 +788,6 @@ class SO101FBEnv(SO101BaseEnv):
         self.success_history = deque(maxlen=50)
 
         self.z_height_achieved = False
-        self.cube_focus_idx = None
         self.target_cube_id = None
         self.object_start_height = None
         self.episode_types = ("hold", "hoist", "prehoist", "default")

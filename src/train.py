@@ -32,7 +32,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 800_000,
+    "TOTAL_TIMESTEPS": 1_000_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,
@@ -89,7 +89,8 @@ class DataCollectorCallback(BaseCallback):
             "physics": [],  # qpos + qvel
             "raw_motor_ctrl": [],  # 6-DOF motor command
             "task_ids": [],
-            "episode_ids": []
+            "episode_ids": [],
+            "cube_focus_idxs": [],
         }
         self.chunk_id = 0
         os.makedirs(self.save_dir, exist_ok=True)
@@ -127,6 +128,7 @@ class DataCollectorCallback(BaseCallback):
 
             self.buffer["episode_ids"].append(info["episode_id"])
             self.buffer["task_ids"].append(info["task_id"])
+            self.buffer["cube_focus_idxs"].append(info["cube_focus_idx"])
 
             # 3. Standard RL data
             self.buffer["action"].append(actions[i])
