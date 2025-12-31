@@ -32,7 +32,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 600_000,
+    "TOTAL_TIMESTEPS": 800_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,

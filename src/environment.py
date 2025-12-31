@@ -367,8 +367,8 @@ def get_curriculum_probs(success_rate):
     p_learner = np.array([0.15, 0.3, 0.5, 0.05])  # Middle: Focus on lifting mechanics
     p_expert = np.array([0.1, 0.1, 0.1, 0.7])  # End: Generalization
     # 2. Mixing Factors
-    alpha = sigmoid(success_rate, center=0.2, steepness=12.0)
-    beta = sigmoid(success_rate, center=0.6, steepness=12.0)
+    alpha = sigmoid(success_rate, center=0.05, steepness=12.0)
+    beta = sigmoid(success_rate, center=0.4, steepness=12.0)
     # 3. Blending
     # Blend Novice and Learner based on alpha
     intermediate_probs = ((1.0 - alpha) * p_novice) + (alpha * p_learner)
@@ -777,6 +777,34 @@ class SO101ReachEnv(SO101BaseEnv):
             mat=np.eye(3).flatten(),
             rgba=[1, 0, 0, 0.4]  # Transparent Red
         )
+
+class SO101FBEnv(SO101BaseEnv):
+    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=0):
+        super().__init__(render_mode, reward_type, control_mode)
+        self.fb_train = fb_train
+        self.evaluate = evaluate
+        self.forced_cube_pos_idx = forced_cube_pos_idx
+        self.success_history = deque(maxlen=50)
+
+        self.z_height_achieved = False
+        self.cube_focus_idx = None
+        self.target_cube_id = None
+        self.object_start_height = None
+        self.episode_types = ("hold", "hoist", "prehoist", "default")
+        self.task_type_id = 1
+
+        self.max_episode_steps = 200
+        # 64 bit chosen for 64 bit computers
+
+        if self.fb_train:
+            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float64)
+        else:
+            # 65 FB Obs + 6 Task Obs - 18 Distractor Cube States
+            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(53,), dtype=np.float64)
+        actions_dims = 7 if self.control_mode == 1 else 6
+        self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
+        self.obs_buffer = np.zeros(self.observation_space.shape[0], dtype=np.float64)
+        self.task_obs_buffer = np.zeros(6, dtype=np.float64)
 
 if __name__ == "__main__":
     end_effector_testing = False
