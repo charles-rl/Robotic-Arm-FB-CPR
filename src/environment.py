@@ -392,7 +392,7 @@ class SO101LiftEnv(SO101BaseEnv):
         self.target_cube_id = None
         self.object_start_height = None
         self.episode_types = ("hold", "hoist", "prehoist", "default")
-        self.task_type_id = 1
+        self.task_id = 1
 
         self.max_episode_steps = 200
         # 64 bit chosen for 64 bit computers
@@ -406,6 +406,9 @@ class SO101LiftEnv(SO101BaseEnv):
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
         self.obs_buffer = np.zeros(self.observation_space.shape[0], dtype=np.float64)
         self.task_obs_buffer = np.zeros(6, dtype=np.float64)
+        # this is for an asymmetric LPF for the force sensor because it is unstable
+        # ONLY used for the reward
+        self.smoothed_jaw_forces = np.zeros(2, dtype=np.float64)
 
     def step(self, action):
         self._apply_action(action, use_gripper=True)
@@ -475,6 +478,21 @@ class SO101LiftEnv(SO101BaseEnv):
 
         left_jaw_force = self.data.sensordata[self.left_sensor_id]
         right_jaw_force = self.data.sensordata[self.right_sensor_id]
+        curr_raw = np.array([left_jaw_force, right_jaw_force])
+        # 1. Identify where we need Fast Attack (Rise) vs Slow Decay (Fall)
+        # Mask is True if Raw > Smoothed (Rise)
+        is_rising = curr_raw > self.smoothed_jaw_forces
+        # 2. Update Logic
+        # If rising: Take raw value instantly
+        # If falling: Decay (Previous * 0.9 + Current * 0.1)
+        # Note: We use np.where for cleaner conditional logic than boolean indexing
+        self.smoothed_jaw_forces = np.where(
+            is_rising,
+            curr_raw,
+            (self.smoothed_jaw_forces * 0.9) + (curr_raw * 0.1)
+        )
+        # 3. Unpack for reward calculation
+        left_jaw_force, right_jaw_force = self.smoothed_jaw_forces
 
         total_force = left_jaw_force + right_jaw_force
         has_force = bool(total_force > 20.0)
@@ -522,20 +540,7 @@ class SO101LiftEnv(SO101BaseEnv):
         else:
             success_rate = 0.0
 
-        if success_rate < 0.2:
-            stage_probs = [0.45, 0.45, 0.1, 0.0]  # 45% Hold, 45% Hoist, 10% Pre-Hoist, 0% Random
-            self.current_curriculum_stage = 0
-        elif success_rate < 0.4:
-            stage_probs = [0.2, 0.2, 0.3, 0.3]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-            self.current_curriculum_stage = 1
-        elif success_rate < 0.6:
-            stage_probs = [0.15, 0.15, 0.2, 0.5]  # 20% Hold, 20% Hoist, 15% Pre-Hoist, 30% Random
-            self.current_curriculum_stage = 2
-        else:
-            stage_probs = [0.1, 0.1, 0.1, 0.7]  # 10% Hold, 10% Hoist, 10% Pre-Hoist, 70% Random
-            self.current_curriculum_stage = 3
-
-        # stage_probs = get_curriculum_probs(success_rate)
+        stage_probs = get_curriculum_probs(success_rate)
 
         if self.evaluate == "hold":
             stage_probs = [1.0, 0.0, 0.0, 0.0]
@@ -545,7 +550,6 @@ class SO101LiftEnv(SO101BaseEnv):
             stage_probs = [0.0, 0.0, 1.0, 0.0]
         elif self.evaluate is True:
             stage_probs = [0.0, 0.0, 0.0, 1.0]
-        # stage_probs = [0.0, 0.0, 0.0, 1.0]
         stage_roll = np.random.rand()  # Default behavior
 
         super().reset(seed=seed)
@@ -570,7 +574,7 @@ class SO101LiftEnv(SO101BaseEnv):
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_min[5]  # auto close
             self.dynamic_goal_pos = np.array(loc_data["air_pos"])
-            self.episode_type_id = 0  # name in self.episode_types
+            self.episode_id = 0  # name in self.episode_types
 
         elif stage_roll < stage_probs[0] + stage_probs[1]:
             self._set_cube_pos_quat(other_cube_jnt_id, self.cube_start_positions[other_pos_idx], np.array([1, 0, 0, 0]))
@@ -581,7 +585,7 @@ class SO101LiftEnv(SO101BaseEnv):
             self.data.qvel[:6] = 0.0
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_max[5] # open
-            self.episode_type_id = 1  # name in self.episode_types
+            self.episode_id = 1  # name in self.episode_types
 
         elif stage_roll < stage_probs[0] + stage_probs[1] + stage_probs[2]:
             self._set_cube_pos_quat(other_cube_jnt_id, self.cube_start_positions[other_pos_idx], np.array([1, 0, 0, 0]))
@@ -592,7 +596,7 @@ class SO101LiftEnv(SO101BaseEnv):
             self.data.qvel[:6] = 0.0
             self.data.ctrl[:6] = qpos
             self.data.ctrl[5] = self.joint_max[5]  # open
-            self.episode_type_id = 2  # name in self.episode_types
+            self.episode_id = 2  # name in self.episode_types
         else:
             other_quat = np.array([1, 0, 0, 0])
             active_quat = np.array([1, 0, 0, 0])
@@ -603,7 +607,7 @@ class SO101LiftEnv(SO101BaseEnv):
             self.data.qvel[:6] = 0.0
             self.data.ctrl[:6] = self._arm_start_pos
             self.data.ctrl[5] = self.joint_max[5]  # open
-            self.episode_type_id = 3  # name in self.episode_types
+            self.episode_id = 3  # name in self.episode_types
 
         # Update Kinematics
         self.configuration.update(self.data.qpos)
@@ -656,7 +660,7 @@ class SO101ReachEnv(SO101BaseEnv):
         super().__init__(render_mode, reward_type, control_mode)
         self.fb_train = fb_train
         self.evaluate = evaluate
-        self.task_type_id = 0
+        self.task_id = 0
 
         self.max_episode_steps = 100
         # 64 bit chosen for 64 bit computers

@@ -43,10 +43,10 @@ def create_agent(
     agent_config.model.action_dim = action_dim  # number integer
     agent_config.model.device = device
     agent_config.model.norm_obs = True
-    agent_config.model.seq_length = 1
-    agent_config.train.batch_size = 512
+    agent_config.model.seq_length = 3  # consider sequence length of 3 because grip force is unstable
+    agent_config.train.batch_size = 1024  # consider lowering if too slow
     # archi
-    agent_config.model.archi.z_dim = 30
+    agent_config.model.archi.z_dim = 50
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -66,7 +66,7 @@ def create_agent(
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.9
+    agent_config.train.discount = 0.99
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -156,7 +156,7 @@ class TrainConfig:
     wandb_name_prefix: str | None = None
 
     def __post_init__(self):
-        self.eval_tasks = ["lift"]
+        self.eval_tasks = ["hold", "hoist", "prehoist", "lift"]
 
 
 class Workspace:
@@ -278,6 +278,14 @@ class Workspace:
                     control_mode="delta_end_effector",
                     fb_train=True,
                     evaluate=True,
+                )
+            else:
+                eval_env = SO101LiftEnv(
+                    render_mode=render_mode,
+                    reward_type="dense",
+                    control_mode="delta_end_effector",
+                    fb_train=True,
+                    evaluate=task,
                 )
 
             num_ep = self.cfg.num_eval_episodes
