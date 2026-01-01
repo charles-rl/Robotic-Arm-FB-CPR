@@ -44,7 +44,7 @@ def create_agent(
     agent_config.model.device = device
     agent_config.model.norm_obs = True
     agent_config.model.seq_length = 3  # consider sequence length of 3 because grip force is unstable
-    agent_config.train.batch_size = 1024  # consider lowering if too slow
+    agent_config.train.batch_size = 512  # consider 1024 if bad
     # archi
     agent_config.model.archi.z_dim = 50
     agent_config.model.archi.b.norm = True
@@ -93,10 +93,10 @@ def load_data(dataset_path):
 
         # --- NEW FIELDS LOADED HERE ---
         # These are stored in the buffer and will be available in batch samples
-        "raw_motor_ctrl": raw_data["raw_motor_ctrl"][:-1].astype(np.float32),
+        # "raw_motor_ctrl": raw_data["raw_motor_ctrl"][:-1].astype(np.float32),
         "task_ids": to_2d(raw_data["task_ids"][:-1]).astype(np.int32),
         "episode_ids": to_2d(raw_data["episode_ids"][:-1]).astype(np.int32),
-        "reward": to_2d(raw_data["reward"][:-1] * reward_scale).astype(np.float32),
+        # "reward": to_2d(raw_data["reward"][:-1] * reward_scale).astype(np.float32),
         # -----------------------------
         "next": {
             "reward": to_2d(raw_data["reward"][1:] * reward_scale).astype(np.float32),
@@ -124,7 +124,7 @@ def set_seed_everywhere(seed):
 
 @dataclasses.dataclass
 class TrainConfig:
-    dataset_root: str = "../data/lift_merged.npz"
+    dataset_root: str = "../data/lift/lift_merged.npz"
     seed: int = 0
     domain_name: str = "walker"
     task_name: str | None = None
@@ -268,8 +268,7 @@ class Workspace:
     def eval(self, t):
         all_tasks_total_reward = np.zeros((len(self.cfg.eval_tasks),), dtype=np.float64)
         for task_idx, task in enumerate(self.cfg.eval_tasks):
-            z = self.reward_inference(task).reshape(1, -1)
-
+            # TODO: this is only specific to lift task, maybe think of a more robust way here
             render_mode = "rgb_array"
             if "lift" in task:
                 eval_env = SO101LiftEnv(
@@ -292,6 +291,7 @@ class Workspace:
             total_reward = np.zeros((num_ep,), dtype=np.float64)
             for ep in range(num_ep):
                 observation, _ = eval_env.reset()
+                z = self.reward_inference(task, env=eval_env).reshape(1, -1)
                 ep_frames = []
                 done = False
                 while not done:
@@ -322,7 +322,6 @@ class Workspace:
                     {f"{task}/{k}": v for k, v in m_dict.items()},
                     step=t,
                 )
-                #TODO: wrong logged value here, for some reason it's just 0
 
             m_dict["task"] = task
             print(m_dict)
@@ -337,19 +336,48 @@ class Workspace:
             imageio.mimsave(str(self.work_dir / video_name), frames, fps=30)
             print(f"   💾 Saved video to {video_name}")
 
-    def reward_inference(self, task_name) -> torch.Tensor:
+    def reward_inference(self, task_name, env=None) -> torch.Tensor:
         # 1. Sample a batch
         num_samples = self.cfg.num_inference_samples
         batch = self.replay_buffer["train"].sample(num_samples)
 
-        # TODO: In the future given task name then sample only the rewards with those task ids
-        # This is only a batch sample so in the future it must be batch sampling that specific task ID
+        # 2. Identify Indices
+        # Cube A Z: 29 (start) + 2 (z) = 31
+        # Cube B Z: 47 (start) + 2 (z) = 49
+        idx_cube_a_z = 31
+        idx_cube_b_z = 49
 
-        # 6. Infer z
-        # The network expects NORMALIZED obs, so we pass the original batch
+        # 3. Determine Goal Z and Active Cube from the current Env
+        if env is not None:
+            goal_z = env.dynamic_goal_pos[2]
+            focus_idx = env.cube_focus_idx
+        else:
+            # Fallback (Table 0.43 + Lift 0.2)
+            goal_z = 0.63
+            focus_idx = 0  # Default to Cube A
+
+        # 4. Extract Cube Height from the Batch (GPU Tensor)
+        next_obs = batch["next"]["observation"]
+
+        if focus_idx == 0:
+            cube_z_batch = next_obs[:, idx_cube_a_z]
+        else:
+            cube_z_batch = next_obs[:, idx_cube_b_z]
+
+        # 5. Compute "Precision Reward" Formula on the Batch
+        # Formula: (1 - tanh(10 * dist)) + 2 * (1 - tanh(50 * dist))
+        # This rewards states in the buffer that are close to the target height
+        dist_to_goal = torch.abs(cube_z_batch - goal_z)
+
+        term_1 = 1.0 - torch.tanh(10.0 * dist_to_goal)
+        term_2 = 2.0 * (1.0 - torch.tanh(50.0 * dist_to_goal))
+
+        # Shape [N, 1]
+        calculated_reward = (term_1 + term_2).unsqueeze(1)
+
         z = self.agent._model.reward_inference(
             next_obs=batch["next"]["observation"],
-            reward=batch["next"]["reward"],
+            reward=calculated_reward,
         )
         return z
 

@@ -381,11 +381,12 @@ def get_curriculum_probs(success_rate):
 
 
 class SO101LiftEnv(SO101BaseEnv):
-    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=0):
+    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=0, forced_cube_focus_idx=-1):
         super().__init__(render_mode, reward_type, control_mode)
         self.fb_train = fb_train
         self.evaluate = evaluate
         self.forced_cube_pos_idx = forced_cube_pos_idx
+        self.forced_cube_focus_idx = forced_cube_focus_idx
         self.success_history = deque(maxlen=50)
 
         self.z_height_achieved = False
@@ -555,8 +556,12 @@ class SO101LiftEnv(SO101BaseEnv):
         super().reset(seed=seed)
 
         other_pos_idx = int(np.random.choice(np.delete(np.arange(len(self.cube_start_positions)), self.forced_cube_pos_idx)))
-        active_cube_idx = 0 if np.random.rand() > 0.5 else 1
-        self.cube_focus_idx = active_cube_idx
+        # If we have a specific cube to focus then choose that, if not then randomize
+        if self.forced_cube_focus_idx == -1:
+            active_cube_idx = 0 if np.random.rand() > 0.5 else 1
+            self.cube_focus_idx = active_cube_idx
+        else:
+            self.cube_focus_idx = self.forced_cube_focus_idx
         self.target_cube_id = self.cube_a_id if self.cube_focus_idx == 0 else self.cube_b_id
         active_cube_jnt_id = self.cube_a_jnt_id if self.cube_focus_idx == 0 else self.cube_b_jnt_id
         other_cube_jnt_id = self.cube_b_jnt_id if self.cube_focus_idx == 0 else self.cube_a_jnt_id
