@@ -44,9 +44,9 @@ def create_agent(
     agent_config.model.device = device
     agent_config.model.norm_obs = True
     agent_config.model.seq_length = 1  # consider sequence length of 3 because grip force is unstable
-    agent_config.train.batch_size = 1024  # consider 1024 if bad
+    agent_config.train.batch_size = 1024
     # archi
-    agent_config.model.archi.z_dim = 16
+    agent_config.model.archi.z_dim = 100
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -57,8 +57,8 @@ def create_agent(
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-4
-    agent_config.train.lr_actor = 1e-4
+    agent_config.train.lr_b = 1e-6
+    agent_config.train.lr_actor = 1e-6
     agent_config.train.ortho_coef = 1
     agent_config.train.train_goal_ratio = 0.5
 

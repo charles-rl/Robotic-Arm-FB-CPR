@@ -564,7 +564,15 @@ class SO101LiftEnv(SO101BaseEnv):
 
         super().reset(seed=seed)
 
-        other_pos_idx = int(np.random.choice(np.delete(np.arange(len(self.cube_start_positions)), self.forced_cube_pos_idx)))
+
+        if self.forced_cube_focus_idx == -1:
+            cube_pos_idxs = np.random.choice(np.arange(len(self.cube_start_positions)), size=2, replace=False)
+            forced_cube_pos_idx, other_pos_idx = cube_pos_idxs
+        else:
+            other_pos_idx = int(
+                np.random.choice(np.delete(np.arange(len(self.cube_start_positions)), self.forced_cube_pos_idx)))
+            forced_cube_pos_idx = self.forced_cube_pos_idx
+
         # If we have a specific cube to focus then choose that, if not then randomize
         if self.forced_cube_focus_idx == -1:
             active_cube_idx = 0 if np.random.rand() > 0.5 else 1
@@ -575,7 +583,7 @@ class SO101LiftEnv(SO101BaseEnv):
         active_cube_jnt_id = self.cube_a_jnt_id if self.cube_focus_idx == 0 else self.cube_b_jnt_id
         other_cube_jnt_id = self.cube_b_jnt_id if self.cube_focus_idx == 0 else self.cube_a_jnt_id
 
-        loc_name = list(POSITIONS.keys())[self.forced_cube_pos_idx]
+        loc_name = list(POSITIONS.keys())[forced_cube_pos_idx]
         loc_data = POSITIONS[loc_name]
 
         if stage_roll < stage_probs[0]:
@@ -615,7 +623,7 @@ class SO101LiftEnv(SO101BaseEnv):
             other_quat = np.array([1, 0, 0, 0])
             active_quat = np.array([1, 0, 0, 0])
             self._set_cube_pos_quat(other_cube_jnt_id, self.cube_start_positions[other_pos_idx], other_quat)
-            self._set_cube_pos_quat(active_cube_jnt_id, self.cube_start_positions[self.forced_cube_pos_idx], active_quat)
+            self._set_cube_pos_quat(active_cube_jnt_id, self.cube_start_positions[forced_cube_pos_idx], active_quat)
 
             self.data.qpos[:6] = self._arm_start_pos
             self.data.qvel[:6] = 0.0

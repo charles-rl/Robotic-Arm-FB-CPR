@@ -19,9 +19,9 @@ from environment import SO101LiftEnv, SO101ReachEnv
 # ==================================================================================
 CONFIG = {
     "DEBUG": False,
-    "EVAL": True,  # Set to False to Train, True to Evaluate
+    "EVAL": False,  # Set to False to Train, True to Evaluate
     "TASK": "lift",  # "lift" or "reach"
-    "FORCED_CUBE_POSITION": 0,  # 0 for Center, 1 for Left, 2 for Right, 3 for Far Left, 4 for Far Right
+    "FORCED_CUBE_POSITION": -1,  # 0 for Center, 1 for Left, 2 for Right, 3 for Far Left, 4 for Far Right
     "ALGO": "TQC",  # "SAC", "TQC", "PPO", "CrossQ"
     "CONTROL_MODE": "delta_end_effector",  # "delta_end_effector" or "delta_joint_position"
     "REWARD_THRESHOLD": 100.0,
@@ -33,7 +33,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 800_000,
+    "TOTAL_TIMESTEPS": 2_000_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,
