@@ -19,8 +19,9 @@ from environment import SO101LiftEnv, SO101ReachEnv
 # ==================================================================================
 CONFIG = {
     "DEBUG": False,
-    "EVAL": False,  # Set to False to Train, True to Evaluate
+    "EVAL": True,  # Set to False to Train, True to Evaluate
     "TASK": "lift",  # "lift" or "reach"
+    "FORCED_CUBE_POSITION": 0,  # 0 for Center, 1 for Left, 2 for Right, 3 for Far Left, 4 for Far Right
     "ALGO": "TQC",  # "SAC", "TQC", "PPO", "CrossQ"
     "CONTROL_MODE": "delta_end_effector",  # "delta_end_effector" or "delta_joint_position"
     "REWARD_THRESHOLD": 100.0,
@@ -32,7 +33,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 1_000_000,
+    "TOTAL_TIMESTEPS": 800_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,
@@ -233,7 +234,8 @@ def create_vec_env(task, control_mode, evaluate=False, stats_path=None, training
         render_mode=None,  # Training is headless
         reward_type="dense",
         control_mode=control_mode,
-        evaluate=evaluate
+        evaluate=evaluate,
+        forced_cube_pos_idx=CONFIG["FORCED_CUBE_POSITION"]
     ))])
 
     # 2. Add Normalization
@@ -408,7 +410,7 @@ def evaluate(episodes=3, evaluate_type=True, only_visualize=False):
     # Note: We use DummyVecEnv manually here to control rendering loop
     def make_eval_env():
         return EnvClass(render_mode=render_mode, reward_type="dense", control_mode=CONFIG["CONTROL_MODE"],
-                        evaluate=evaluate_type)
+                        evaluate=evaluate_type, forced_cube_pos_idx=CONFIG["FORCED_CUBE_POSITION"])
 
     env_ = DummyVecEnv([make_eval_env])
     max_steps = env_.get_attr("max_episode_steps")[0]

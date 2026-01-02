@@ -43,10 +43,10 @@ def create_agent(
     agent_config.model.action_dim = action_dim  # number integer
     agent_config.model.device = device
     agent_config.model.norm_obs = True
-    agent_config.model.seq_length = 3  # consider sequence length of 3 because grip force is unstable
-    agent_config.train.batch_size = 512  # consider 1024 if bad
+    agent_config.model.seq_length = 1  # consider sequence length of 3 because grip force is unstable
+    agent_config.train.batch_size = 1024  # consider 1024 if bad
     # archi
-    agent_config.model.archi.z_dim = 50
+    agent_config.model.archi.z_dim = 16
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -57,8 +57,8 @@ def create_agent(
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-6
-    agent_config.train.lr_actor = 1e-6
+    agent_config.train.lr_b = 1e-4
+    agent_config.train.lr_actor = 1e-4
     agent_config.train.ortho_coef = 1
     agent_config.train.train_goal_ratio = 0.5
 
@@ -66,7 +66,7 @@ def create_agent(
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.99
+    agent_config.train.discount = 0.98
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -129,7 +129,7 @@ class TrainConfig:
     domain_name: str = "walker"
     task_name: str | None = None
     dataset_expl_agent: str = "rnd"
-    num_train_steps: int = 800_000
+    num_train_steps: int = 1_500_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
     work_dir: str | None = "../models"
@@ -269,6 +269,7 @@ class Workspace:
         all_tasks_total_reward = np.zeros((len(self.cfg.eval_tasks),), dtype=np.float64)
         for task_idx, task in enumerate(self.cfg.eval_tasks):
             # TODO: this is only specific to lift task, maybe think of a more robust way here
+            z = self.reward_inference(task).reshape(1, -1)
             render_mode = "rgb_array"
             if "lift" in task:
                 eval_env = SO101LiftEnv(
@@ -291,7 +292,6 @@ class Workspace:
             total_reward = np.zeros((num_ep,), dtype=np.float64)
             for ep in range(num_ep):
                 observation, _ = eval_env.reset()
-                z = self.reward_inference(task, env=eval_env).reshape(1, -1)
                 ep_frames = []
                 done = False
                 while not done:
@@ -341,43 +341,43 @@ class Workspace:
         num_samples = self.cfg.num_inference_samples
         batch = self.replay_buffer["train"].sample(num_samples)
 
-        # 2. Identify Indices
-        # Cube A Z: 29 (start) + 2 (z) = 31
-        # Cube B Z: 47 (start) + 2 (z) = 49
-        idx_cube_a_z = 31
-        idx_cube_b_z = 49
-
-        # 3. Determine Goal Z and Active Cube from the current Env
-        if env is not None:
-            goal_z = env.dynamic_goal_pos[2]
-            focus_idx = env.cube_focus_idx
-        else:
-            # Fallback (Table 0.43 + Lift 0.2)
-            goal_z = 0.63
-            focus_idx = 0  # Default to Cube A
-
-        # 4. Extract Cube Height from the Batch (GPU Tensor)
-        next_obs = batch["next"]["observation"]
-
-        if focus_idx == 0:
-            cube_z_batch = next_obs[:, idx_cube_a_z]
-        else:
-            cube_z_batch = next_obs[:, idx_cube_b_z]
-
-        # 5. Compute "Precision Reward" Formula on the Batch
-        # Formula: (1 - tanh(10 * dist)) + 2 * (1 - tanh(50 * dist))
-        # This rewards states in the buffer that are close to the target height
-        dist_to_goal = torch.abs(cube_z_batch - goal_z)
-
-        term_1 = 1.0 - torch.tanh(10.0 * dist_to_goal)
-        term_2 = 2.0 * (1.0 - torch.tanh(50.0 * dist_to_goal))
-
-        # Shape [N, 1]
-        calculated_reward = (term_1 + term_2).unsqueeze(1)
+        # # 2. Identify Indices
+        # # Cube A Z: 29 (start) + 2 (z) = 31
+        # # Cube B Z: 47 (start) + 2 (z) = 49
+        # idx_cube_a_z = 31
+        # idx_cube_b_z = 49
+        #
+        # # 3. Determine Goal Z and Active Cube from the current Env
+        # if env is not None:
+        #     goal_z = env.dynamic_goal_pos[2]
+        #     focus_idx = env.cube_focus_idx
+        # else:
+        #     # Fallback (Table 0.43 + Lift 0.2)
+        #     goal_z = 0.63
+        #     focus_idx = 0  # Default to Cube A
+        #
+        # # 4. Extract Cube Height from the Batch (GPU Tensor)
+        # next_obs = batch["next"]["observation"]
+        #
+        # if focus_idx == 0:
+        #     cube_z_batch = next_obs[:, idx_cube_a_z]
+        # else:
+        #     cube_z_batch = next_obs[:, idx_cube_b_z]
+        #
+        # # 5. Compute "Precision Reward" Formula on the Batch
+        # # Formula: (1 - tanh(10 * dist)) + 2 * (1 - tanh(50 * dist))
+        # # This rewards states in the buffer that are close to the target height
+        # dist_to_goal = torch.abs(cube_z_batch - goal_z)
+        #
+        # term_1 = 1.0 - torch.tanh(10.0 * dist_to_goal)
+        # term_2 = 2.0 * (1.0 - torch.tanh(50.0 * dist_to_goal))
+        #
+        # # Shape [N, 1]
+        # calculated_reward = ((term_1 + term_2) * (1.0 / 3.0)).unsqueeze(1)
 
         z = self.agent._model.reward_inference(
             next_obs=batch["next"]["observation"],
-            reward=calculated_reward,
+            reward=batch["next"]["reward"],
         )
         return z
 

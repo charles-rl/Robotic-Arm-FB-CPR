@@ -321,6 +321,7 @@ def laboratory_mode():
         np.pi / 2,
         joint_min[-1],
     ], dtype=np.float32)
+    start_pos = np.array([0.3479, 0.6670, 0.3046, -0.7867, 1.5717, 0.8385])
 
     # Initialize the robot here BEFORE you start moving to the cube
     data.qpos[:6] = start_pos
@@ -344,7 +345,10 @@ def laboratory_mode():
 
     # Cube Control State
     cube_frozen = True  # Starts floating
-    cube_target_pos = np.array([-0.25, 0.0, 0.43])  # The "Air" position you want to test
+    table_z_height = float(model.body("base").pos[2])
+    cube_size = float(model.geom("cube_a_geom").size[2])
+    cube_spawn_height = table_z_height + cube_size
+    cube_target_pos = np.array([-0.1, -0.1, cube_spawn_height])  # The "Air" position you want to test
 
     # Manual Joint Offsets (For Wrist/Gripper)
     # [ShoulderPan, ShoulderLift, Elbow, WristFlex, WristRoll, Gripper]
@@ -475,4 +479,4 @@ def laboratory_mode():
 
 
 if __name__ == "__main__":
-    laboratory_mode_with_sensors()
+    laboratory_mode()

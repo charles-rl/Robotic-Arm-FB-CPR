@@ -68,13 +68,17 @@ class SO101BaseEnv(gymnasium.Env):
             np.pi / 2,
             self.joint_min[-1],  # Close gripper
         ], dtype=np.float32)
+        # get cube size
+        self.table_z_height = float(self.model.body("base").pos[2])
+        self.cube_size = float(self.model.geom("cube_a_geom").size[2])
+        self.cube_spawn_height = self.table_z_height + self.cube_size
         # TODO: Rescale the positions here to fit according to base pos
         self.cube_start_positions = [
-            [-0.25, 0.00, 0.43],  # 1. Center
-            [-0.25, 0.15, 0.43],  # 2. Left
-            [-0.25, -0.15, 0.43],  # 3. Right
-            [-0.10, 0.10, 0.43],  # 4. Far Left
-            [-0.10, -0.10, 0.43],  # 5. Far Right
+            [-0.25, 0.00, self.cube_spawn_height],  # 1. Center
+            [-0.25, 0.15, self.cube_spawn_height],  # 2. Left
+            [-0.25, -0.15, self.cube_spawn_height],  # 3. Right
+            [-0.10, 0.10, self.cube_spawn_height],  # 4. Far Left
+            [-0.10, -0.10, self.cube_spawn_height],  # 5. Far Right
         ]
 
         # Base Helper Variables
@@ -156,7 +160,7 @@ class SO101BaseEnv(gymnasium.Env):
         self.fb_obs_buffer[29:47] = self._get_cube_data(self.cube_a_buffer, self.cube_a_id)
         self.fb_obs_buffer[47:65] = self._get_cube_data(self.cube_b_buffer, self.cube_b_id)
 
-    def _apply_action(self, action: np.ndarray, use_gripper=True):
+    def _apply_action(self, action: np.ndarray):
         """
         Handles the messy details of converting Neural Network output to MuJoCo ctrl.
         """
@@ -208,10 +212,7 @@ class SO101BaseEnv(gymnasium.Env):
             self.data.ctrl[:5] = self.configuration.q[:5]
 
         # 3. Gripper Logic
-        if use_gripper:
-            self.data.ctrl[5] = self.joint_max[5] if action[-1] > 0.0 else self.joint_min[5]
-        else:
-            self.data.ctrl[5] = self.joint_min[5]  # Permanently closed
+        self.data.ctrl[5] = self.joint_max[5] if action[-1] > 0.0 else self.joint_min[5]
         self.raw_motor_ctrl_buffer = self.data.ctrl[:6].copy()
 
     def _apply_delta_orientation(self, current_quat, euler_action):
@@ -321,34 +322,42 @@ POSITIONS = {
     "Center": {
         "air_pos": [-0.25, 0.0, 0.63],
         "air_qpos": np.array([0.0553, -1.5220, 0.9610, 0.5584, 1.6101, 0.4974]),
-        "table_pos": [-0.25, 0.0, 0.43],
-        "table_qpos": np.array([0.0909, -1.0126, 1.5656, 0.3595, 1.5721, 0.6596]),
-        "pretable_pos": [-0.25, 0.0, 0.43],
-        "pretable_qpos": np.array([0.0861, -1.4377, 1.5888, 0.5182, 1.5713, 0.6376])
+        "table_pos": [-0.25, 0.0, 0.412],
+        "table_qpos": np.array([0.1342, -1.0270, 1.5659, 0.3684, 1.5729, 0.6551]),
+        "pretable_pos": [-0.25, 0.0, 0.412],
+        "pretable_qpos": np.array([0.0967, -1.5696, 1.5953, 0.6392, 1.5715, 0.5427])
     },
     "Left": {
         "air_pos": [-0.25, 0.15, 0.63],
         "air_qpos": np.array([-0.7155, -0.9421, 0.9299, -0.0953, 1.5903, 0.5242]),
-        "table_pos": [-0.25, 0.15, 0.43],
-        "table_qpos": np.array([-0.6565, -0.1500, 1.1644, -0.2361, 1.5724, 0.9172])
+        "table_pos": [-0.25, 0.15, 0.412],
+        "table_qpos": np.array([-0.6626, -0.1207, 1.2080, -0.3393, 1.7068, 0.5811]),
+        "pretable_pos": [-0.25, 0.15, 0.412],
+        "pretable_qpos": np.array([-0.6691, -0.2610, 1.0626, -0.0738, 1.7113, 0.8122])
     },
     "Right": {
         "air_pos": [-0.25, -0.15, 0.63],
         "air_qpos": np.array([0.7965, -0.9694, 0.8854, 0.0442, 1.5839, 0.5733]),
-        "table_pos": [-0.25, -0.15, 0.43],
-        "table_qpos": np.array([0.8350, -0.0737, 1.1920, -0.4043, 1.6566, 1.0319])
+        "table_pos": [-0.25, -0.15, 0.412],
+        "table_qpos": np.array([0.8838, -0.0156, 1.2381, -0.5583, 1.6628, 0.7958]),
+        "pretable_pos": [-0.25, -0.15, 0.412],
+        "pretable_qpos": np.array([0.7918, -0.2752, 1.2336, -0.3534, 1.6589, 0.8531])
     },
     "Far_Left": {
         "air_pos": [-0.1, 0.1, 0.63],
         "air_qpos": np.array([-0.2764, 0.0184, 0.1065, -0.1694, 1.6029, 0.5976]),
-        "table_pos": [-0.1, 0.1, 0.43],
-        "table_qpos": np.array([-0.2537, 0.8692, 0.2735, -0.9194, 1.5768, 0.6902])
+        "table_pos": [-0.1, 0.1, 0.412],
+        "table_qpos": np.array([-0.2470, 0.9450, 0.2039, -0.9908, 1.5919, 0.8622]),
+        "pretable_pos": [-0.1, 0.1, 0.412],
+        "pretable_qpos": np.array([-0.2497, 0.7082, 0.3153, -0.8738, 1.5721, 0.7853])
     },
     "Far_Right": {
         "air_pos": [-0.1, -0.1, 0.63],
         "air_qpos": np.array([0.3337, 0.0156, 0.2294, -0.3951, 1.5766, 0.2972]),
-        "table_pos": [-0.1, -0.1, 0.43],
-        "table_qpos": np.array([0.3746, 0.8199, 0.3387, -0.9249, 1.6066, 0.9172])
+        "table_pos": [-0.1, -0.1, 0.412],
+        "table_qpos": np.array([0.3884, 0.8641, 0.2971, -0.9048, 1.5714, 0.9882]),
+        "pretable_pos": [-0.1, -0.1, 0.412],
+        "pretable_qpos": np.array([0.3479, 0.6670, 0.3046, -0.7867, 1.5717, 0.8385])
     },
 }
 
@@ -412,7 +421,7 @@ class SO101LiftEnv(SO101BaseEnv):
         self.smoothed_jaw_forces = np.zeros(2, dtype=np.float64)
 
     def step(self, action):
-        self._apply_action(action, use_gripper=True)
+        self._apply_action(action)
 
         for _ in range(self.FRAME_SKIP):
             mujoco.mj_step(self.model, self.data)
@@ -661,7 +670,7 @@ class SO101LiftEnv(SO101BaseEnv):
         )
 
 class SO101ReachEnv(SO101BaseEnv):
-    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=0):
+    def __init__(self, render_mode=None, reward_type="dense", control_mode="delta_joint_position", fb_train=False, evaluate=False, forced_cube_pos_idx=-1):
         super().__init__(render_mode, reward_type, control_mode)
         self.fb_train = fb_train
         self.evaluate = evaluate
@@ -680,7 +689,7 @@ class SO101ReachEnv(SO101BaseEnv):
         self.task_obs_buffer = np.zeros(6, dtype=np.float64)
 
     def step(self, action):
-        self._apply_action(action, use_gripper=False)
+        self._apply_action(action)
 
         for _ in range(self.FRAME_SKIP):
             mujoco.mj_step(self.model, self.data)
@@ -726,16 +735,31 @@ class SO101ReachEnv(SO101BaseEnv):
         distance = np.linalg.norm(ee_pos - self.dynamic_goal_pos)
 
         if self.reward_type == "sparse":
-            return 1.0 if distance < 0.05 else 0.0
+            # we want gripper to be closed
+            is_closed = bool(action[-1] < 0.0)
+            return 1.0 if (distance < 0.05 and is_closed) else 0.0
         elif self.reward_type == "dense":
-            return 1.0 - np.tanh(3.0 * distance)
+            gripper_reward = (-0.1 * action[-1]).item()
+            dist_reward = (1.0 - np.tanh(3.0 * distance)) + (2.0 * (1.0 - np.tanh(50.0 * distance)))
+            return dist_reward + gripper_reward
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.data.qpos[:6] = self._arm_start_pos
         self.data.qvel[:6] = 0.0
         self.data.ctrl[:6] = self._arm_start_pos
-        self.data.ctrl[5] = self.joint_max[5]
+        self.data.ctrl[5] = self.joint_min[5]
+
+        cube_pos_idxs = np.random.choice(np.arange(len(self.cube_start_positions)), size=2, replace=False)
+        quat = np.array([1, 0, 0, 0])
+
+        adr = self.model.jnt_qposadr[self.cube_a_jnt_id]
+        self.data.qpos[adr: adr + 3] = self.cube_start_positions[cube_pos_idxs[0]]
+        self.data.qpos[adr + 3: adr + 7] = quat
+
+        adr = self.model.jnt_qposadr[self.cube_b_jnt_id]
+        self.data.qpos[adr: adr + 3] = self.cube_start_positions[cube_pos_idxs[1]]
+        self.data.qpos[adr + 3: adr + 7] = quat
 
         # Settle Physics
         for _ in range(10):
