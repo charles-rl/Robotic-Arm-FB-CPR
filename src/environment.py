@@ -3,6 +3,7 @@ import gymnasium
 import mujoco
 import mujoco.viewer
 import mink
+import torch
 from collections import deque
 
 class SO101BaseEnv(gymnasium.Env):
@@ -95,6 +96,7 @@ class SO101BaseEnv(gymnasium.Env):
         self.task_types = ("reach", "lift")
         self.task_id = -1
         self.cube_focus_idx = -1
+        self.forced_cube_pos_idx = -1
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -243,6 +245,7 @@ class SO101BaseEnv(gymnasium.Env):
             "episode_id": self.episode_id,
             "task_id": self.task_id,
             "cube_focus_idx": self.cube_focus_idx,
+            "cube_pos_idx": self.forced_cube_pos_idx,
         }
 
     def set_physics_state(self, state_vector):
@@ -473,6 +476,48 @@ class SO101LiftEnv(SO101BaseEnv):
         self.task_obs_buffer[3:6] = obj_to_goal
         return self.task_obs_buffer
 
+    def _compute_fb_reward(self, obs, task_ids, episode_ids, cube_focus_idxs, cube_pos_idxs, target_pos_idx):
+        """
+        Computes the FB inference reward for a batch of transitions.
+        Args:
+            obs: Torch tensor [B, Obs_Dim]
+            cube_focus_idxs: Torch tensor [B, 1]
+            cube_pos_idxs: Torch tensor [B, 1]
+            target_pos_idx: Int (The specific position we want to evaluate, e.g., 1 for Left)
+        """
+        # --- CONSTANTS ---
+        # Cube A Relative Z is at index 31 (29 robot + 3 pos - 1 to get Z? No, 29 + 2 = 31)
+        # 0-29: Robot
+        # 29-32: Cube A Pos (Relative) -> 31 is Z
+        IDX_CUBE_A_Z_REL = 31
+
+        # --- 1. Height Reward ---
+        # We target ~0.22m (Lifted high)
+        target_height = 0.22
+        cube_a_z_rel = obs[:, IDX_CUBE_A_Z_REL]
+        dist_to_height = torch.abs(cube_a_z_rel - target_height)
+
+        # Sharp exponential reward: 1.0 at target, ~0.3 at 0.1m away
+        height_reward = torch.exp(-10.0 * dist_to_height).unsqueeze(1)
+
+        # --- 2. Focus Mask ---
+        # We strictly only want transitions where the agent was focusing on Cube A (0)
+        # If the dataset has Cube B data, we ignore it to avoid confusion.
+        focus_mask = (cube_focus_idxs == 0).float()
+
+        # --- 3. Position Mask ---
+        # If we are evaluating "Lift Left", we only want to reward data collected
+        # from the "Left" configuration.
+        if target_pos_idx != -1:
+            pos_mask = (cube_pos_idxs == target_pos_idx).float()
+        else:
+            pos_mask = torch.ones_like(focus_mask)
+
+        # --- Combine ---
+        final_reward = height_reward * focus_mask * pos_mask
+
+        return final_reward
+
     def _compute_reward(self, action):
         ee_pos = self.data.site_xpos[self.gripper_site_id]
         cube_pos = self.data.xpos[self.target_cube_id].copy()
@@ -565,7 +610,7 @@ class SO101LiftEnv(SO101BaseEnv):
         super().reset(seed=seed)
 
 
-        if self.forced_cube_focus_idx == -1:
+        if self.forced_cube_pos_idx == -1:
             cube_pos_idxs = np.random.choice(np.arange(len(self.cube_start_positions)), size=2, replace=False)
             forced_cube_pos_idx, other_pos_idx = cube_pos_idxs
         else:
@@ -686,11 +731,11 @@ class SO101ReachEnv(SO101BaseEnv):
 
         self.max_episode_steps = 100
         # 64 bit chosen for 64 bit computers
-        # 65 FB Obs + 6 Task Obs
+        # 29 FB Obs + 6 Task Obs
         if self.fb_train:
             self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float64)
         else:
-            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(71,), dtype=np.float64)
+            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(35,), dtype=np.float64)
         actions_dims = 7 if self.control_mode == 1 else 6
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
         self.obs_buffer = np.zeros(self.observation_space.shape[0], dtype=np.float64)
@@ -716,8 +761,9 @@ class SO101ReachEnv(SO101BaseEnv):
 
     def _get_obs(self):
         self._update_fb_buffer()
-        self.obs_buffer[:65] = self.fb_obs_buffer.copy()
-        self.obs_buffer[65:71] = self._get_task_state()
+        # Cube data not included
+        self.obs_buffer[:29] = self.fb_obs_buffer.copy()
+        self.obs_buffer[29:35] = self._get_task_state()
         return self.obs_buffer.copy()
 
     def _get_obs_info(self):
@@ -747,9 +793,43 @@ class SO101ReachEnv(SO101BaseEnv):
             is_closed = bool(action[-1] < 0.0)
             return 1.0 if (distance < 0.05 and is_closed) else 0.0
         elif self.reward_type == "dense":
-            gripper_reward = (-0.1 * action[-1]).item()
+            gripper_reward = (-0.2 * action[-1]).item()
             dist_reward = (1.0 - np.tanh(3.0 * distance)) + (2.0 * (1.0 - np.tanh(50.0 * distance)))
-            return dist_reward + gripper_reward
+            action_norm = np.linalg.norm(action)
+            action_penalty = -0.1 * action_norm * action_norm  # max is 0.7
+            return dist_reward + gripper_reward + action_penalty
+
+    def _compute_fb_reward(self, obs, **kwargs):
+        """
+        Computes reward based on distance to the CURRENT dynamic goal.
+        """
+        # --- CONSTANTS ---
+        # Robot EE Relative Pos is at indices 12, 13, 14
+        # (Based on _get_robot_state: 12:15 = site_xpos - base_pos)
+        IDX_EE_REL_X = 12
+        IDX_EE_REL_Y = 13
+        IDX_EE_REL_Z = 14
+
+        # --- 1. Get Batch EE Position ---
+        ee_pos_rel = obs[:, IDX_EE_REL_X:IDX_EE_REL_Z + 1]  # [B, 3]
+
+        # --- 2. Get Current Goal (Relative) ---
+        # We must convert the Env's numpy goal to a Torch tensor on the same device
+        device = obs.device
+
+        # Calculate relative goal: Goal_World - Base_World
+        # We assume self.dynamic_goal_pos is set (e.g., during reset)
+        goal_rel_np = self.dynamic_goal_pos - self.base_pos_world
+        goal_rel = torch.tensor(goal_rel_np, device=device, dtype=torch.float32).unsqueeze(0)  # [1, 3]
+
+        # --- 3. Compute Distance Reward ---
+        # Euclidean distance
+        dists = torch.norm(ee_pos_rel - goal_rel, dim=1, keepdim=True)
+
+        # Sharp reward for reaching
+        reach_reward = torch.exp(-5.0 * dists)
+
+        return reach_reward
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)

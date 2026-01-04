@@ -19,8 +19,8 @@ from environment import SO101LiftEnv, SO101ReachEnv
 # ==================================================================================
 CONFIG = {
     "DEBUG": False,
-    "EVAL": False,  # Set to False to Train, True to Evaluate
-    "TASK": "lift",  # "lift" or "reach"
+    "EVAL": True,  # Set to False to Train, True to Evaluate
+    "TASK": "reach",  # "lift" or "reach"
     "FORCED_CUBE_POSITION": -1,  # 0 for Center, 1 for Left, 2 for Right, 3 for Far Left, 4 for Far Right
     "ALGO": "TQC",  # "SAC", "TQC", "PPO", "CrossQ"
     "CONTROL_MODE": "delta_end_effector",  # "delta_end_effector" or "delta_joint_position"
@@ -33,7 +33,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 2_000_000,
+    "TOTAL_TIMESTEPS": 800_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,
@@ -92,6 +92,7 @@ class DataCollectorCallback(BaseCallback):
             "task_ids": [],
             "episode_ids": [],
             "cube_focus_idxs": [],
+            "cube_pos_idxs": [],
         }
         self.chunk_id = 0
         os.makedirs(self.save_dir, exist_ok=True)
@@ -130,6 +131,8 @@ class DataCollectorCallback(BaseCallback):
             self.buffer["episode_ids"].append(info["episode_id"])
             self.buffer["task_ids"].append(info["task_id"])
             self.buffer["cube_focus_idxs"].append(info["cube_focus_idx"])
+            self.buffer["cube_pos_idxs"].append(info["cube_pos_idx"])
+
 
             # 3. Standard RL data
             self.buffer["action"].append(actions[i])
@@ -471,7 +474,10 @@ if __name__ == "__main__":
         train_agent()
     else:
         # Run standard evaluation suite
-        evaluate(episodes=1, evaluate_type="hold")
-        evaluate(episodes=1, evaluate_type="hoist")
-        evaluate(episodes=1, evaluate_type="prehoist")
-        evaluate(episodes=3, evaluate_type=True)  # Full random eval
+        if CONFIG["TASK"] == "lift":
+            evaluate(episodes=1, evaluate_type="hold")
+            evaluate(episodes=1, evaluate_type="hoist")
+            evaluate(episodes=1, evaluate_type="prehoist")
+            evaluate(episodes=3, evaluate_type=True)  # Full random eval
+        elif CONFIG["TASK"] == "reach":
+            evaluate(episodes=5, evaluate_type=True)  # Full random eval

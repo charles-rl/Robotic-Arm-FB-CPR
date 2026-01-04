@@ -66,7 +66,7 @@ def create_agent(
     agent_config.train.fb_pessimism_penalty = 0.0
     agent_config.train.actor_pessimism_penalty = 0.5
 
-    agent_config.train.discount = 0.98
+    agent_config.train.discount = 0.99
     agent_config.compile = compile
     agent_config.cudagraphs = cudagraphs
 
@@ -75,42 +75,119 @@ def create_agent(
 
 def load_data(dataset_path):
     print(f"🔄 Loading data from: {dataset_path}")
-    raw_data = np.load(dataset_path)
-    print(f"Data path: {dataset_path}")
 
     def to_2d(arr):
         if arr.ndim == 1:
             return arr.reshape(-1, 1)
         return arr
 
-    reward_scale = 1.0 / 8.0 # divided by 8.0 since 8 is max for lift task
-    # TODO: this scale is only for lift task
-
+    # Initialize storage structure
     storage = {
-        "observation": raw_data["observation"][:-1].astype(np.float32),
-        "action": raw_data["action"][:-1].astype(np.float32),
-        "physics": raw_data["physics"][:-1].astype(np.float32),
-
-        # --- NEW FIELDS LOADED HERE ---
-        # These are stored in the buffer and will be available in batch samples
-        # "raw_motor_ctrl": raw_data["raw_motor_ctrl"][:-1].astype(np.float32),
-        "task_ids": to_2d(raw_data["task_ids"][:-1]).astype(np.int32),
-        "episode_ids": to_2d(raw_data["episode_ids"][:-1]).astype(np.int32),
-        # "reward": to_2d(raw_data["reward"][:-1] * reward_scale).astype(np.float32),
-        # -----------------------------
+        "observation": [],
+        "action": [],
+        "physics": [],
+        "task_ids": [],
+        "episode_ids": [],
+        "cube_focus_idxs": [],  # Don't forget this!
+        "cube_pos_idxs": [],  # We will inject this manually
         "next": {
-            "reward": to_2d(raw_data["reward"][1:] * reward_scale).astype(np.float32),
-            "observation": raw_data["observation"][1:].astype(np.float32),
-            "physics": raw_data["physics"][1:].astype(np.float32),
-            "terminated": to_2d(raw_data["terminated"][:-1]).astype(bool),
+            "reward": [],
+            "observation": [],
+            "physics": [],
+            "terminated": [],
         }
     }
 
-    # Debug prints
-    print("✅ Data loaded successfully.")
-    print(f"   Obs shape: {storage['observation'].shape}")
-    print(f"   Action shape: {storage['action'].shape}")
-    print(f"   Extra fields loaded: raw_motor_ctrl, task_ids, episode_ids, reward")
+    lift_reward_scale = 1.0 / 8.0
+    # Reach max reward is ~3.0 (1 dist + 2 precision + 0 grip).
+    # Scaling by 2.5 puts it roughly in [0, 1.2] range. Good.
+    reach_reward_scale = 1.0 / 2.5
+
+    # --- 1. Load Lift Datasets ---
+    cube_positions = ["center", "left", "right", "farleft", "farright"]
+
+    for cube_pos_idx, cube_dir in enumerate(cube_positions):
+        path = f"{dataset_path}/{cube_dir}/lift_merged.npz"
+        try:
+            raw_data = np.load(path)
+            print(f"   found: {path}")
+        except FileNotFoundError:
+            print(f"   ⚠️ SKIPPING missing path: {path}")
+            continue
+
+        # Standard Fields
+        storage["observation"].extend(raw_data["observation"][:-1].astype(np.float32))
+        storage["action"].extend(raw_data["action"][:-1].astype(np.float32))
+        storage["physics"].extend(raw_data["physics"][:-1].astype(np.float32))
+
+        # Meta Info
+        storage["task_ids"].extend(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
+        storage["episode_ids"].extend(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
+
+        # Cube Focus (Missing in your snippet)
+        if "cube_focus_idxs" in raw_data:
+            storage["cube_focus_idxs"].extend(to_2d(raw_data["cube_focus_idxs"][:-1]).astype(np.int32))
+        else:
+            # Fallback if old data didn't have it (Default to 0)
+            storage["cube_focus_idxs"].extend(np.zeros_like(to_2d(raw_data["task_ids"][:-1])).astype(np.int32))
+
+        # Manual Injection of Cube Position Index
+        num_steps = len(raw_data["observation"]) - 1
+        storage["cube_pos_idxs"].extend(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
+
+        # Next Fields
+        storage["next"]["reward"].extend(to_2d(raw_data["reward"][1:] * lift_reward_scale).astype(np.float32))
+        storage["next"]["observation"].extend(raw_data["observation"][1:].astype(np.float32))
+        storage["next"]["physics"].extend(raw_data["physics"][1:].astype(np.float32))
+        storage["next"]["terminated"].extend(to_2d(raw_data["terminated"][:-1]).astype(bool))
+
+    # --- 2. Load Reach Dataset ---
+    reach_path = f"{dataset_path}/reach_merged.npz"
+    try:
+        raw_data = np.load(reach_path)
+        print(f"   found: {reach_path}")
+
+        # We use -1 to denote "Reach" or "Random" position
+        cube_pos_idx = -1
+
+        storage["observation"].extend(raw_data["observation"][:-1].astype(np.float32))
+        storage["action"].extend(raw_data["action"][:-1].astype(np.float32))
+        storage["physics"].extend(raw_data["physics"][:-1].astype(np.float32))
+        storage["task_ids"].extend(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
+        storage["episode_ids"].extend(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
+
+        if "cube_focus_idxs" in raw_data:
+            storage["cube_focus_idxs"].extend(to_2d(raw_data["cube_focus_idxs"][:-1]).astype(np.int32))
+        else:
+            storage["cube_focus_idxs"].extend(np.zeros_like(to_2d(raw_data["task_ids"][:-1])).astype(np.int32))
+
+        num_steps = len(raw_data["observation"]) - 1
+        storage["cube_pos_idxs"].extend(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
+
+        storage["next"]["reward"].extend(to_2d(raw_data["reward"][1:] * reach_reward_scale).astype(np.float32))
+        storage["next"]["observation"].extend(raw_data["observation"][1:].astype(np.float32))
+        storage["next"]["physics"].extend(raw_data["physics"][1:].astype(np.float32))
+        storage["next"]["terminated"].extend(to_2d(raw_data["terminated"][:-1]).astype(bool))
+
+    except FileNotFoundError:
+        print(f"   ⚠️ SKIPPING Reach dataset (not found)")
+
+    # --- 3. Concatenate ---
+    # Handle top-level keys
+    for key in ["observation", "action", "physics", "task_ids", "episode_ids", "cube_focus_idxs", "cube_pos_idxs"]:
+        if len(storage[key]) > 0:
+            storage[key] = np.concatenate(storage[key], axis=0)
+        else:
+            print(f"❌ Error: No data found for key {key}")
+            return None
+
+    # Handle nested 'next' keys
+    for key in ["reward", "observation", "physics", "terminated"]:
+        if len(storage["next"][key]) > 0:
+            storage["next"][key] = np.concatenate(storage["next"][key], axis=0)
+
+    print("✅ Combined Data loaded successfully.")
+    print(f"   Total Transitions: {storage['observation'].shape[0]}")
     return storage
 
 
@@ -124,12 +201,12 @@ def set_seed_everywhere(seed):
 
 @dataclasses.dataclass
 class TrainConfig:
-    dataset_root: str = "../data/lift/lift_merged.npz"
+    dataset_root: str = "../../fb_data/"
     seed: int = 0
-    domain_name: str = "walker"
+    domain_name: str = "so101"
     task_name: str | None = None
-    dataset_expl_agent: str = "rnd"
-    num_train_steps: int = 1_500_000
+    dataset_expl_agent: str = "tqc"
+    num_train_steps: int = 4_000_000
     load_n_episodes: int = 5_000
     log_every_updates: int = 1000
     work_dir: str | None = "../models"
@@ -138,7 +215,7 @@ class TrainConfig:
     checkpoint_every_steps: int = 100_000
 
     # eval
-    num_eval_episodes: int = 10
+    num_eval_episodes: int = 5
     num_inference_samples: int = 50_000  # for z sampling
     eval_every_steps: int = 10_000
     eval_tasks: List[str] | None = None
@@ -156,7 +233,7 @@ class TrainConfig:
     wandb_name_prefix: str | None = None
 
     def __post_init__(self):
-        self.eval_tasks = ["hold", "hoist", "prehoist", "lift"]
+        self.eval_tasks = ["reach","lift_center", "lift_left", "lift_right", "lift_far_left", "lift_far_right"]
 
 
 class Workspace:
@@ -268,30 +345,46 @@ class Workspace:
     def eval(self, t):
         all_tasks_total_reward = np.zeros((len(self.cfg.eval_tasks),), dtype=np.float64)
         for task_idx, task in enumerate(self.cfg.eval_tasks):
-            # TODO: this is only specific to lift task, maybe think of a more robust way here
-            z = self.reward_inference(task).reshape(1, -1)
-            render_mode = "rgb_array"
-            if "lift" in task:
-                eval_env = SO101LiftEnv(
+            task_parts = task.split("_")
+            render_mode = "rgb_array" if EVAL else None
+            if "reach" in task_parts[0]:
+                eval_env = SO101ReachEnv(
                     render_mode=render_mode,
                     reward_type="dense",
                     control_mode="delta_end_effector",
                     fb_train=True,
                     evaluate=True,
                 )
-            else:
+            elif "lift" in task_parts[0]:
+                cube_position = ''.join(task_parts[1:])
+                if "center" in cube_position:
+                    forced_cube_pos_idx = 0
+                elif "left" in cube_position:
+                    forced_cube_pos_idx = 1
+                elif "right" in cube_position:
+                    forced_cube_pos_idx = 2
+                elif "farleft" in cube_position:
+                    forced_cube_pos_idx = 3
+                elif "farright" in cube_position:
+                    forced_cube_pos_idx = 4
+                else:
+                    forced_cube_pos_idx = -1
+
                 eval_env = SO101LiftEnv(
                     render_mode=render_mode,
                     reward_type="dense",
                     control_mode="delta_end_effector",
                     fb_train=True,
-                    evaluate=task,
+                    evaluate=True,
+                    forced_cube_pos_idx=forced_cube_pos_idx,
+                    forced_cube_focus_idx=0  # <--- MODIFIED: Focus on Cube A
                 )
 
             num_ep = self.cfg.num_eval_episodes
             total_reward = np.zeros((num_ep,), dtype=np.float64)
             for ep in range(num_ep):
                 observation, _ = eval_env.reset()
+                z = self.reward_inference(task_parts, eval_env).reshape(1, -1)
                 ep_frames = []
                 done = False
                 while not done:
@@ -336,48 +429,50 @@ class Workspace:
             imageio.mimsave(str(self.work_dir / video_name), frames, fps=30)
             print(f"   💾 Saved video to {video_name}")
 
-    def reward_inference(self, task_name, env=None) -> torch.Tensor:
+    def reward_inference(self, task_parts, env) -> torch.Tensor:
         # 1. Sample a batch
         num_samples = self.cfg.num_inference_samples
         batch = self.replay_buffer["train"].sample(num_samples)
 
-        # # 2. Identify Indices
-        # # Cube A Z: 29 (start) + 2 (z) = 31
-        # # Cube B Z: 47 (start) + 2 (z) = 49
-        # idx_cube_a_z = 31
-        # idx_cube_b_z = 49
-        #
-        # # 3. Determine Goal Z and Active Cube from the current Env
-        # if env is not None:
-        #     goal_z = env.dynamic_goal_pos[2]
-        #     focus_idx = env.cube_focus_idx
-        # else:
-        #     # Fallback (Table 0.43 + Lift 0.2)
-        #     goal_z = 0.63
-        #     focus_idx = 0  # Default to Cube A
-        #
-        # # 4. Extract Cube Height from the Batch (GPU Tensor)
-        # next_obs = batch["next"]["observation"]
-        #
-        # if focus_idx == 0:
-        #     cube_z_batch = next_obs[:, idx_cube_a_z]
-        # else:
-        #     cube_z_batch = next_obs[:, idx_cube_b_z]
-        #
-        # # 5. Compute "Precision Reward" Formula on the Batch
-        # # Formula: (1 - tanh(10 * dist)) + 2 * (1 - tanh(50 * dist))
-        # # This rewards states in the buffer that are close to the target height
-        # dist_to_goal = torch.abs(cube_z_batch - goal_z)
-        #
-        # term_1 = 1.0 - torch.tanh(10.0 * dist_to_goal)
-        # term_2 = 2.0 * (1.0 - torch.tanh(50.0 * dist_to_goal))
-        #
-        # # Shape [N, 1]
-        # calculated_reward = ((term_1 + term_2) * (1.0 / 3.0)).unsqueeze(1)
+        # Unpack commonly used batch items
+        obs = batch["next"]["observation"]
+        task_ids = batch["task_ids"]
+        episode_ids = batch["episode_ids"]
+        cube_focus_idxs = batch["cube_focus_idxs"]
+        cube_pos_idxs = batch["cube_pos_idxs"]
+
+        calculated_reward = None
+
+        # 2. Route to correct logic
+        if "reach" in task_parts[0]:
+            # Reach requires the env to know the current goal
+            calculated_reward = env._compute_fb_reward(obs=obs)
+
+        elif "lift" in task_parts[0]:
+            # Determine Target Position Index
+            pos_map = {"center": 0, "left": 1, "right": 2, "farleft": 3, "farright": 4}
+            # Extract "left", "center", etc from task_parts
+            # Expecting task_parts like ["lift", "left"]
+            pos_name = "".join(task_parts[1:])
+            target_pos_idx = pos_map.get(pos_name, -1)
+
+            calculated_reward = env._compute_fb_reward(
+                obs=obs,
+                task_ids=task_ids,
+                episode_ids=episode_ids,
+                cube_focus_idxs=cube_focus_idxs,
+                cube_pos_idxs=cube_pos_idxs,
+                target_pos_idx=target_pos_idx
+            )
+
+        # 3. Perform Inference
+        if calculated_reward is None:
+            # Fallback (Should not happen)
+            calculated_reward = torch.zeros((obs.shape[0], 1), device=obs.device)
 
         z = self.agent._model.reward_inference(
-            next_obs=batch["next"]["observation"],
-            reward=batch["next"]["reward"],
+            next_obs=obs,
+            reward=calculated_reward,
         )
         return z
 
