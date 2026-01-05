@@ -46,7 +46,7 @@ def create_agent(
     agent_config.model.seq_length = 1  # consider sequence length of 3 because grip force is unstable
     agent_config.train.batch_size = 1024
     # archi
-    agent_config.model.archi.z_dim = 100
+    agent_config.model.archi.z_dim = 50
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
     agent_config.model.archi.b.hidden_dim = 256
@@ -57,14 +57,14 @@ def create_agent(
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-6
-    agent_config.train.lr_actor = 1e-6
-    agent_config.train.ortho_coef = 1
+    agent_config.train.lr_b = 1e-4
+    agent_config.train.lr_actor = 1e-4
+    agent_config.train.ortho_coef = 5.0
     agent_config.train.train_goal_ratio = 0.5
 
     # changed because fb loss explodes
-    agent_config.train.fb_pessimism_penalty = 0.0
-    agent_config.train.actor_pessimism_penalty = 0.5
+    agent_config.train.fb_pessimism_penalty = 1.0
+    agent_config.train.actor_pessimism_penalty = 1.0
 
     agent_config.train.discount = 0.99
     agent_config.compile = compile
@@ -81,26 +81,25 @@ def load_data(dataset_path):
             return arr.reshape(-1, 1)
         return arr
 
-    # Initialize storage structure
-    storage = {
+    # Initialize storage as LISTS of Arrays
+    # We will append whole chunks here, then concatenate once at the end.
+    storage_lists = {
         "observation": [],
         "action": [],
         "physics": [],
         "task_ids": [],
         "episode_ids": [],
-        "cube_focus_idxs": [],  # Don't forget this!
-        "cube_pos_idxs": [],  # We will inject this manually
         "next": {
             "reward": [],
             "observation": [],
             "physics": [],
             "terminated": [],
+            "cube_focus_idxs": [],
+            "cube_pos_idxs": [],
         }
     }
 
     lift_reward_scale = 1.0 / 8.0
-    # Reach max reward is ~3.0 (1 dist + 2 precision + 0 grip).
-    # Scaling by 2.5 puts it roughly in [0, 1.2] range. Good.
     reach_reward_scale = 1.0 / 2.5
 
     # --- 1. Load Lift Datasets ---
@@ -109,86 +108,95 @@ def load_data(dataset_path):
     for cube_pos_idx, cube_dir in enumerate(cube_positions):
         path = f"{dataset_path}/{cube_dir}/lift_merged.npz"
         try:
+            print(f"   📂 Reading {cube_dir}...")
             raw_data = np.load(path)
-            print(f"   found: {path}")
         except FileNotFoundError:
             print(f"   ⚠️ SKIPPING missing path: {path}")
             continue
 
-        # Standard Fields
-        storage["observation"].extend(raw_data["observation"][:-1].astype(np.float32))
-        storage["action"].extend(raw_data["action"][:-1].astype(np.float32))
-        storage["physics"].extend(raw_data["physics"][:-1].astype(np.float32))
+        # Append whole arrays (Fast!)
+        storage_lists["observation"].append(raw_data["observation"][:-1].astype(np.float32))
+        storage_lists["action"].append(raw_data["action"][:-1].astype(np.float32))
+        storage_lists["physics"].append(raw_data["physics"][:-1].astype(np.float32))
+        storage_lists["task_ids"].append(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
+        storage_lists["episode_ids"].append(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
 
-        # Meta Info
-        storage["task_ids"].extend(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
-        storage["episode_ids"].extend(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
+        # Next / Transitions
+        storage_lists["next"]["observation"].append(raw_data["observation"][1:].astype(np.float32))
+        storage_lists["next"]["physics"].append(raw_data["physics"][1:].astype(np.float32))
 
-        # Cube Focus (Missing in your snippet)
+        # Outcomes (Slice [:-1] to align with action)
+        storage_lists["next"]["reward"].append(to_2d(raw_data["reward"][:-1] * lift_reward_scale).astype(np.float32))
+        storage_lists["next"]["terminated"].append(to_2d(raw_data["terminated"][:-1]).astype(bool))
+
+        # Metadata
         if "cube_focus_idxs" in raw_data:
-            storage["cube_focus_idxs"].extend(to_2d(raw_data["cube_focus_idxs"][:-1]).astype(np.int32))
+            storage_lists["next"]["cube_focus_idxs"].append(to_2d(raw_data["cube_focus_idxs"][1:]).astype(np.int32))
         else:
-            # Fallback if old data didn't have it (Default to 0)
-            storage["cube_focus_idxs"].extend(np.zeros_like(to_2d(raw_data["task_ids"][:-1])).astype(np.int32))
+            storage_lists["next"]["cube_focus_idxs"].append(
+                np.zeros_like(to_2d(raw_data["task_ids"][1:])).astype(np.int32))
 
-        # Manual Injection of Cube Position Index
+        # Manual Injection
         num_steps = len(raw_data["observation"]) - 1
-        storage["cube_pos_idxs"].extend(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
-
-        # Next Fields
-        storage["next"]["reward"].extend(to_2d(raw_data["reward"][1:] * lift_reward_scale).astype(np.float32))
-        storage["next"]["observation"].extend(raw_data["observation"][1:].astype(np.float32))
-        storage["next"]["physics"].extend(raw_data["physics"][1:].astype(np.float32))
-        storage["next"]["terminated"].extend(to_2d(raw_data["terminated"][:-1]).astype(bool))
+        storage_lists["next"]["cube_pos_idxs"].append(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
 
     # --- 2. Load Reach Dataset ---
     reach_path = f"{dataset_path}/reach_merged.npz"
-    try:
-        raw_data = np.load(reach_path)
-        print(f"   found: {reach_path}")
+    if True:  # Just indenting block
+        try:
+            print(f"   📂 Reading reach...")
+            raw_data = np.load(reach_path)
+            cube_pos_idx = -1
 
-        # We use -1 to denote "Reach" or "Random" position
-        cube_pos_idx = -1
+            storage_lists["observation"].append(raw_data["observation"][:-1].astype(np.float32))
+            storage_lists["action"].append(raw_data["action"][:-1].astype(np.float32))
+            storage_lists["physics"].append(raw_data["physics"][:-1].astype(np.float32))
+            storage_lists["task_ids"].append(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
+            storage_lists["episode_ids"].append(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
 
-        storage["observation"].extend(raw_data["observation"][:-1].astype(np.float32))
-        storage["action"].extend(raw_data["action"][:-1].astype(np.float32))
-        storage["physics"].extend(raw_data["physics"][:-1].astype(np.float32))
-        storage["task_ids"].extend(to_2d(raw_data["task_ids"][:-1]).astype(np.int32))
-        storage["episode_ids"].extend(to_2d(raw_data["episode_ids"][:-1]).astype(np.int32))
+            storage_lists["next"]["observation"].append(raw_data["observation"][1:].astype(np.float32))
+            storage_lists["next"]["physics"].append(raw_data["physics"][1:].astype(np.float32))
 
-        if "cube_focus_idxs" in raw_data:
-            storage["cube_focus_idxs"].extend(to_2d(raw_data["cube_focus_idxs"][:-1]).astype(np.int32))
-        else:
-            storage["cube_focus_idxs"].extend(np.zeros_like(to_2d(raw_data["task_ids"][:-1])).astype(np.int32))
+            storage_lists["next"]["reward"].append(
+                to_2d(raw_data["reward"][:-1] * reach_reward_scale).astype(np.float32))
+            storage_lists["next"]["terminated"].append(to_2d(raw_data["terminated"][:-1]).astype(bool))
 
-        num_steps = len(raw_data["observation"]) - 1
-        storage["cube_pos_idxs"].extend(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
+            if "cube_focus_idxs" in raw_data:
+                storage_lists["next"]["cube_focus_idxs"].append(to_2d(raw_data["cube_focus_idxs"][1:]).astype(np.int32))
+            else:
+                storage_lists["next"]["cube_focus_idxs"].append(
+                    np.zeros_like(to_2d(raw_data["task_ids"][1:])).astype(np.int32))
 
-        storage["next"]["reward"].extend(to_2d(raw_data["reward"][1:] * reach_reward_scale).astype(np.float32))
-        storage["next"]["observation"].extend(raw_data["observation"][1:].astype(np.float32))
-        storage["next"]["physics"].extend(raw_data["physics"][1:].astype(np.float32))
-        storage["next"]["terminated"].extend(to_2d(raw_data["terminated"][:-1]).astype(bool))
+            num_steps = len(raw_data["observation"]) - 1
+            storage_lists["next"]["cube_pos_idxs"].append(np.full((num_steps, 1), cube_pos_idx, dtype=np.int32))
 
-    except FileNotFoundError:
-        print(f"   ⚠️ SKIPPING Reach dataset (not found)")
+        except FileNotFoundError:
+            print(f"   ⚠️ SKIPPING Reach dataset (not found)")
 
-    # --- 3. Concatenate ---
-    # Handle top-level keys
-    for key in ["observation", "action", "physics", "task_ids", "episode_ids", "cube_focus_idxs", "cube_pos_idxs"]:
-        if len(storage[key]) > 0:
-            storage[key] = np.concatenate(storage[key], axis=0)
+    print("🧩 Concatenating arrays (this might take a moment)...")
+
+    # --- 3. Final Structure ---
+    final_storage = {
+        "observation": None, "action": None, "physics": None, "task_ids": None, "episode_ids": None,
+        "next": {}
+    }
+
+    # Concatenate Top Level
+    for key in ["observation", "action", "physics", "task_ids", "episode_ids"]:
+        if len(storage_lists[key]) > 0:
+            final_storage[key] = np.concatenate(storage_lists[key], axis=0)
         else:
             print(f"❌ Error: No data found for key {key}")
             return None
 
-    # Handle nested 'next' keys
-    for key in ["reward", "observation", "physics", "terminated"]:
-        if len(storage["next"][key]) > 0:
-            storage["next"][key] = np.concatenate(storage["next"][key], axis=0)
+    # Concatenate Next Level
+    for key in ["reward", "observation", "physics", "terminated", "cube_focus_idxs", "cube_pos_idxs"]:
+        if len(storage_lists["next"][key]) > 0:
+            final_storage["next"][key] = np.concatenate(storage_lists["next"][key], axis=0)
 
     print("✅ Combined Data loaded successfully.")
-    print(f"   Total Transitions: {storage['observation'].shape[0]}")
-    return storage
+    print(f"   Total Transitions: {final_storage['observation'].shape[0]}")
+    return final_storage
 
 
 def set_seed_everywhere(seed):
@@ -201,7 +209,7 @@ def set_seed_everywhere(seed):
 
 @dataclasses.dataclass
 class TrainConfig:
-    dataset_root: str = "../../fb_data/"
+    dataset_root: str = "../../../fb_data"
     seed: int = 0
     domain_name: str = "so101"
     task_name: str | None = None
@@ -229,7 +237,7 @@ class TrainConfig:
     use_wandb: bool = True
     wandb_ename: str | None = "charlessosmena0-academia-sinica"
     wandb_gname: str | None = "fb"
-    wandb_pname: str | None = "so101-lift-fb"
+    wandb_pname: str | None = "so101-lift-reach-fb"
     wandb_name_prefix: str | None = None
 
     def __post_init__(self):
@@ -435,11 +443,17 @@ class Workspace:
         batch = self.replay_buffer["train"].sample(num_samples)
 
         # Unpack commonly used batch items
+        # 1. Next Observation (Target for FB)
         obs = batch["next"]["observation"]
+
+        # 2. Metadata stored at TOP LEVEL (index t) in load_data
         task_ids = batch["task_ids"]
         episode_ids = batch["episode_ids"]
-        cube_focus_idxs = batch["cube_focus_idxs"]
-        cube_pos_idxs = batch["cube_pos_idxs"]
+
+        # 3. Metadata stored in 'NEXT' (index t+1 or constant) in load_data
+        # We explicitly moved these to 'next' in the previous step
+        cube_focus_idxs = batch["next"]["cube_focus_idxs"]
+        cube_pos_idxs = batch["next"]["cube_pos_idxs"]
 
         calculated_reward = None
 

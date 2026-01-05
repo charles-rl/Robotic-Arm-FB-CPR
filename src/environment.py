@@ -731,11 +731,11 @@ class SO101ReachEnv(SO101BaseEnv):
 
         self.max_episode_steps = 100
         # 64 bit chosen for 64 bit computers
-        # 29 FB Obs + 6 Task Obs
+        # 65 FB Obs + 6 Task Obs
         if self.fb_train:
             self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float64)
         else:
-            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(35,), dtype=np.float64)
+            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(71,), dtype=np.float64)
         actions_dims = 7 if self.control_mode == 1 else 6
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
         self.obs_buffer = np.zeros(self.observation_space.shape[0], dtype=np.float64)
@@ -761,9 +761,9 @@ class SO101ReachEnv(SO101BaseEnv):
 
     def _get_obs(self):
         self._update_fb_buffer()
-        # Cube data not included
-        self.obs_buffer[:29] = self.fb_obs_buffer.copy()
-        self.obs_buffer[29:35] = self._get_task_state()
+        self.obs_buffer[:65] = self.fb_obs_buffer.copy()
+        if not self.fb_train:
+            self.obs_buffer[65:71] = self._get_task_state()
         return self.obs_buffer.copy()
 
     def _get_obs_info(self):
