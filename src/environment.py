@@ -731,11 +731,11 @@ class SO101ReachEnv(SO101BaseEnv):
 
         self.max_episode_steps = 100
         # 64 bit chosen for 64 bit computers
-        # 65 FB Obs + 6 Task Obs
+        # 29 FB Obs + 6 Task Obs = 35
         if self.fb_train:
             self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(65,), dtype=np.float64)
         else:
-            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(71,), dtype=np.float64)
+            self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(35,), dtype=np.float64)
         actions_dims = 7 if self.control_mode == 1 else 6
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(actions_dims,), dtype=np.float32)
         self.obs_buffer = np.zeros(self.observation_space.shape[0], dtype=np.float64)
@@ -761,9 +761,11 @@ class SO101ReachEnv(SO101BaseEnv):
 
     def _get_obs(self):
         self._update_fb_buffer()
-        self.obs_buffer[:65] = self.fb_obs_buffer.copy()
-        if not self.fb_train:
-            self.obs_buffer[65:71] = self._get_task_state()
+        if self.fb_train:
+            self.obs_buffer[:65] = self.fb_obs_buffer.copy()
+        else:
+            self.obs_buffer[:29] = self.fb_obs_buffer[:29].copy()
+            self.obs_buffer[29:35] = self._get_task_state()
         return self.obs_buffer.copy()
 
     def _get_obs_info(self):
@@ -793,10 +795,11 @@ class SO101ReachEnv(SO101BaseEnv):
             is_closed = bool(action[-1] < 0.0)
             return 1.0 if (distance < 0.05 and is_closed) else 0.0
         elif self.reward_type == "dense":
-            gripper_reward = (-0.2 * action[-1]).item()
-            dist_reward = (1.0 - np.tanh(3.0 * distance)) + (2.0 * (1.0 - np.tanh(50.0 * distance)))
-            action_norm = np.linalg.norm(action)
-            action_penalty = -0.1 * action_norm * action_norm  # max is 0.7
+            precise_goal_weight = 1.0 - np.tanh(50.0 * distance)
+            gripper_reward = (-0.2 * action[-1]).item() * precise_goal_weight
+            dist_reward = (1.0 - np.tanh(3.0 * distance)) + (2.0 * precise_goal_weight)
+            action_norm = np.linalg.norm(action[:-1])  # Exclude gripper
+            action_penalty = -0.05 * action_norm * action_norm * precise_goal_weight # max is 0.35
             return dist_reward + gripper_reward + action_penalty
 
     def _compute_fb_reward(self, obs, **kwargs):

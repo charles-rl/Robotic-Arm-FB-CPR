@@ -19,7 +19,7 @@ from environment import SO101LiftEnv, SO101ReachEnv
 # ==================================================================================
 CONFIG = {
     "DEBUG": False,
-    "EVAL": True,  # Set to False to Train, True to Evaluate
+    "EVAL": False,  # Set to False to Train, True to Evaluate
     "TASK": "reach",  # "lift" or "reach"
     "FORCED_CUBE_POSITION": -1,  # 0 for Center, 1 for Left, 2 for Right, 3 for Far Left, 4 for Far Right
     "ALGO": "TQC",  # "SAC", "TQC", "PPO", "CrossQ"
@@ -33,7 +33,7 @@ CONFIG = {
     "DATASET_DIR": "../data",
 
     # Training Hyperparameters (Production)
-    "TOTAL_TIMESTEPS": 800_000,
+    "TOTAL_TIMESTEPS": 1_500_000,
     "BATCH_SIZE": 512,
     "BUFFER_SIZE": 1_000_000,
     "LOG_INTERVAL": 10,
