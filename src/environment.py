@@ -1,3 +1,7 @@
+"""
+Created by Charles Sosmeña charlessosmena0@gmail.com
+"""
+
 import numpy as np
 import gymnasium
 import mujoco

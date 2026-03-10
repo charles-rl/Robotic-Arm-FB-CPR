@@ -1,3 +1,7 @@
+"""
+Created by Charles Sosmeña charlessosmena0@gmail.com
+"""
+
 import pymunk
 import pymunk.pygame_util
 import pygame
