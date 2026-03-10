@@ -798,7 +798,7 @@ class SO101ReachEnv(SO101BaseEnv):
             precise_goal_weight = 1.0 - np.tanh(50.0 * distance)
             gripper_reward = (-0.2 * action[-1]).item() * precise_goal_weight
             dist_reward = (1.0 - np.tanh(3.0 * distance)) + (2.0 * precise_goal_weight)
-            action_norm = np.linalg.norm(action[:-1])  # Exclude gripper
+            action_norm = np.linalg.norm(action[:3])  # Exclude gripper
             action_penalty = -0.05 * action_norm * action_norm * precise_goal_weight # max is 0.35
             return dist_reward + gripper_reward + action_penalty
 

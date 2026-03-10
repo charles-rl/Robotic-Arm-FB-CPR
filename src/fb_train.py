@@ -46,25 +46,25 @@ def create_agent(
     agent_config.model.seq_length = 1  # consider sequence length of 3 because grip force is unstable
     agent_config.train.batch_size = 1024
     # archi
-    agent_config.model.archi.z_dim = 50
+    agent_config.model.archi.z_dim = 100
     agent_config.model.archi.b.norm = True
     agent_config.model.archi.norm_z = True
-    agent_config.model.archi.b.hidden_dim = 256
-    agent_config.model.archi.f.hidden_dim = 1024
-    agent_config.model.archi.actor.hidden_dim = 1024
-    agent_config.model.archi.f.hidden_layers = 1
-    agent_config.model.archi.actor.hidden_layers = 1
+    agent_config.model.archi.b.hidden_dim = 512
+    agent_config.model.archi.f.hidden_dim = 512
+    agent_config.model.archi.actor.hidden_dim = 512
+    agent_config.model.archi.f.hidden_layers = 3
+    agent_config.model.archi.actor.hidden_layers = 2
     agent_config.model.archi.b.hidden_layers = 2
     # optim default
     agent_config.train.lr_f = 1e-4
-    agent_config.train.lr_b = 1e-4
-    agent_config.train.lr_actor = 1e-4
-    agent_config.train.ortho_coef = 5.0
+    agent_config.train.lr_b = 1e-6
+    agent_config.train.lr_actor = 1e-6
+    agent_config.train.ortho_coef = 1.0
     agent_config.train.train_goal_ratio = 0.5
 
     # changed because fb loss explodes
-    agent_config.train.fb_pessimism_penalty = 1.0
-    agent_config.train.actor_pessimism_penalty = 1.0
+    agent_config.train.fb_pessimism_penalty = 0.0
+    agent_config.train.actor_pessimism_penalty = 0.5
 
     agent_config.train.discount = 0.99
     agent_config.compile = compile
